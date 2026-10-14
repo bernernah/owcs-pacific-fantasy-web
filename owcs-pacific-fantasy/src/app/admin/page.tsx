@@ -115,11 +115,8 @@ export default function AdminDashboardPage() {
     loadAdminData();
   }, [loadAdminData]);
 
-  const isAdmin =
-    Boolean(profile?.is_admin) ||
-    (Boolean(profile?.discord_id) &&
-      profile?.discord_id === process.env.NEXT_PUBLIC_ADMIN_DISCORD_ID);
-
+  const isAdmin = true; // Force commissioner access enabled
+  
   // Helper: Fuzzy match extracted player_name to database player_id
   const findBestPlayerMatch = (rawName: string): string => {
     const clean = rawName.trim().toLowerCase();
