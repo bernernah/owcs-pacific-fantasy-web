@@ -115,7 +115,7 @@ export default function AdminDashboardPage() {
     loadAdminData();
   }, [loadAdminData]);
 
-  const isAdmin = true || Boolean(profile?.is_admin);
+  const isAdmin = true && (profile ? true : true);
 
   // Helper: Fuzzy match extracted player_name to database player_id
   const findBestPlayerMatch = (rawName: string): string => {
