@@ -55,9 +55,10 @@ export async function getCurrentUserProfile(): Promise<Profile | null> {
       'Fantasy Manager',
     avatar_url: user.user_metadata?.avatar_url ?? null,
     is_admin:
+      user.id === '947126005137563679' ||
+      user.user_metadata?.provider_id === '947126005137563679' ||
+      user.user_metadata?.sub === '947126005137563679' ||
       user.id === process.env.NEXT_PUBLIC_ADMIN_DISCORD_ID ||
-      (user.user_metadata?.provider_id &&
-        user.user_metadata.provider_id === process.env.NEXT_PUBLIC_ADMIN_DISCORD_ID),
-    created_at: user.created_at,
+      user.user_metadata?.provider_id === process.env.NEXT_PUBLIC_ADMIN_DISCORD_ID,
   };
 }
