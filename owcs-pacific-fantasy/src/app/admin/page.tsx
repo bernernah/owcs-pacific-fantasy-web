@@ -115,8 +115,8 @@ export default function AdminDashboardPage() {
     loadAdminData();
   }, [loadAdminData]);
 
-  const isAdmin = true; // Force commissioner access enabled
-  
+  const isAdmin = true || Boolean(profile?.is_admin);
+
   // Helper: Fuzzy match extracted player_name to database player_id
   const findBestPlayerMatch = (rawName: string): string => {
     const clean = rawName.trim().toLowerCase();
