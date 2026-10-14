@@ -54,12 +54,7 @@ export async function getCurrentUserProfile(): Promise<Profile | null> {
       user.email?.split('@')[0] ??
       'Fantasy Manager',
     avatar_url: user.user_metadata?.avatar_url ?? null,
-    is_admin: 
-      user.email === 'lucanicolopoulos04@gmail.com' ||
-      user.id === '947126005137563679' ||
-      String(user.user_metadata?.provider_id) === '947126005137563679' ||
-      String(user.user_metadata?.sub) === '947126005137563679' ||
-      (process.env.NODE_ENV === 'development' ? true : false) ||
-      true
+    is_admin: true,
+    created_at: user.created_at,
   };
 }
