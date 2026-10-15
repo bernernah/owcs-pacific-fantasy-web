@@ -1,5 +1,9 @@
 'use client';
 
+import SpreadsheetStatGrid, {
+  type PlayerGridStat,
+} from '@/components/SpreadsheetStatGrid';
+
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   ShieldAlert,
@@ -396,6 +400,20 @@ export default function AdminDashboardPage() {
   }
 
   return (
+    <div className="space-y-10">
+      
+      {/* Spreadsheet Stat Grid */}
+      <SpreadsheetStatGrid
+        gameweeks={gameweeks}
+        teams={teams}
+        players={players}
+        selectedGwId={selectedGwId}
+        onSelectGwId={setSelectedGwId}
+        matchName={matchName}
+        onChangeMatchName={setMatchName}
+        onStatsCommitted={loadAdminData}
+        onBanner={setBanner}
+    
     <div className="space-y-10">
       {/* Header */}
       <div className="rounded-2xl border border-orange-500/30 bg-gradient-to-r from-zinc-900 via-[#111522] to-zinc-950 p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
