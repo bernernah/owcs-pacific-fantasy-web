@@ -1,10 +1,8 @@
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   Shield,
-  Crosshair,
-  HeartPulse,
   DollarSign,
   AlertCircle,
   CheckCircle2,
@@ -13,6 +11,9 @@ import {
   Plus,
   X,
   Lock,
+  RotateCcw,
+  Save,
+  ArrowDownCircle,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import RoleBadge from '@/components/RoleBadge';
@@ -26,8 +27,20 @@ import type {
 
 type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
 
+const SLOT_METADATA: Record<
+  SlotKey,
+  { label: string; expectedRole: PlayerRole }
+> = {
+  tank: { label: 'Tank', expectedRole: 'TANK' },
+  dps1: { label: 'DPS 1', expectedRole: 'DPS' },
+  dps2: { label: 'DPS 2', expectedRole: 'DPS' },
+  sup1: { label: 'Support 1', expectedRole: 'SUPPORT' },
+  sup2: { label: 'Support 2', expectedRole: 'SUPPORT' },
+};
+
 export default function MyTeamPage() {
   const supabase = getSupabaseBrowserClient();
+  const marketSectionRef = useRef<HTMLDivElement | null>(null);
 
   const [userId, setUserId] = useState<string | null>(null);
   const [activeGw, setActiveGw] = useState<Gameweek | null>(null);
@@ -35,7 +48,8 @@ export default function MyTeamPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [existingRoster, setExistingRoster] = useState<UserRoster | null>(null);
 
-  const [slots, setSlots] = useState<Record<SlotKey, Player | null>>({
+  // Saved state in DB vs Local experimental draft state
+  const [savedSlots, setSavedSlots] = useState<Record<SlotKey, Player | null>>({
     tank: null,
     dps1: null,
     dps2: null,
@@ -43,9 +57,22 @@ export default function MyTeamPage() {
     sup2: null,
   });
 
+  const [draftSlots, setDraftSlots] = useState<Record<SlotKey, Player | null>>({
+    tank: null,
+    dps1: null,
+    dps2: null,
+    sup1: null,
+    sup2: null,
+  });
+
+  // Active slot being targeted by the user (e.g. 'dps1')
+  const [activeSlotKey, setActiveSlotKey] = useState<SlotKey | null>(null);
+  const [isRoleModalOpen, setIsRoleModalOpen] = useState<boolean>(false);
+
+  // Market Filters
   const [roleFilter, setRoleFilter] = useState<PlayerRole | 'ALL'>('ALL');
   const [teamFilter, setTeamFilter] = useState<string>('ALL');
-  const [maxPriceFilter, setMaxPriceFilter] = useState<number>(30);
+  const [maxPriceFilter, setMaxPriceFilter] = useState<number>(50);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const [loading, setLoading] = useState<boolean>(true);
@@ -77,7 +104,26 @@ export default function MyTeamPage() {
             .order('price', { ascending: false }),
         ]);
 
-      const gws = (gwData as Gameweek[]) ?? [];
+      let gws = (gwData as Gameweek[]) ?? [];
+
+      // Safeguard: If gameweeks table is empty, create GW1 automatically
+      if (gws.length === 0) {
+        const { data: createdGw } = await supabase
+          .from('gameweeks')
+          .insert({
+            number: 1,
+            name: 'Gameweek 1 - Day 1',
+            lock_time: '2026-10-26T10:00:00Z',
+            is_playoffs: false,
+            status: 'ACTIVE',
+          })
+          .select()
+          .single();
+        if (createdGw) {
+          gws = [createdGw as Gameweek];
+        }
+      }
+
       const currentGw =
         gws.find((g) => g.status === 'ACTIVE') ??
         gws.find((g) => g.status === 'UPCOMING') ??
@@ -90,7 +136,6 @@ export default function MyTeamPage() {
       setPlayers(allPlayers);
 
       if (user && currentGw) {
-        // Fetch current GW roster or fallback to most recent previous GW roster
         const { data: userRosters } = await supabase
           .from('user_rosters')
           .select('*')
@@ -109,13 +154,16 @@ export default function MyTeamPage() {
           }
 
           const byId = Object.fromEntries(allPlayers.map((p) => [p.id, p]));
-          setSlots({
-            tank: byId[baseRoster.tank_id] ?? null,
-            dps1: byId[baseRoster.dps1_id] ?? null,
-            dps2: byId[baseRoster.dps2_id] ?? null,
-            sup1: byId[baseRoster.sup1_id] ?? null,
-            sup2: byId[baseRoster.sup2_id] ?? null,
-          });
+          const loadedSlots: Record<SlotKey, Player | null> = {
+            tank: baseRoster.tank_id ? byId[baseRoster.tank_id] ?? null : null,
+            dps1: baseRoster.dps1_id ? byId[baseRoster.dps1_id] ?? null : null,
+            dps2: baseRoster.dps2_id ? byId[baseRoster.dps2_id] ?? null : null,
+            sup1: baseRoster.sup1_id ? byId[baseRoster.sup1_id] ?? null : null,
+            sup2: baseRoster.sup2_id ? byId[baseRoster.sup2_id] ?? null : null,
+          };
+
+          setSavedSlots(loadedSlots);
+          setDraftSlots(loadedSlots);
         }
       }
 
@@ -130,8 +178,8 @@ export default function MyTeamPage() {
   const maxPerTeam = activeGw?.is_playoffs ? 3 : 2;
 
   const selectedPlayers = useMemo(
-    () => Object.values(slots).filter((p): p is Player => p !== null),
-    [slots]
+    () => Object.values(draftSlots).filter((p): p is Player => p !== null),
+    [draftSlots]
   );
 
   const totalCost = useMemo(
@@ -149,6 +197,14 @@ export default function MyTeamPage() {
     return counts;
   }, [selectedPlayers]);
 
+  // Detect if local draft differs from what is saved in Supabase
+  const hasUnsavedChanges = useMemo(() => {
+    const keys: SlotKey[] = ['tank', 'dps1', 'dps2', 'sup1', 'sup2'];
+    return keys.some(
+      (k) => (draftSlots[k]?.id ?? null) !== (savedSlots[k]?.id ?? null)
+    );
+  }, [draftSlots, savedSlots]);
+
   const isLocked = useMemo(() => {
     if (!activeGw) return false;
     const lockDeadline = new Date(
@@ -157,51 +213,99 @@ export default function MyTeamPage() {
     return new Date() >= lockDeadline || activeGw.status === 'COMPLETED';
   }, [activeGw]);
 
-  const handleAddPlayer = (player: Player) => {
-    setFeedback(null);
-    if (selectedPlayers.some((p) => p.id === player.id)) return;
+  // Clicking a slot on the pitch focuses that role and opens the selection modal
+  const handleSlotClick = (slotKey: SlotKey) => {
+    if (isLocked) return;
+    const meta = SLOT_METADATA[slotKey];
+    setActiveSlotKey(slotKey);
+    setRoleFilter(meta.expectedRole);
+    setIsRoleModalOpen(true);
+  };
 
+  const scrollToMarketWithRole = (slotKey: SlotKey) => {
+    const meta = SLOT_METADATA[slotKey];
+    setActiveSlotKey(slotKey);
+    setRoleFilter(meta.expectedRole);
+    setIsRoleModalOpen(false);
+    marketSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  // Add or swap player in local draft state ONLY (does not write to DB)
+  const handleSelectPlayerIntoDraft = (
+    player: Player,
+    explicitSlot?: SlotKey | null
+  ) => {
+    setFeedback(null);
+
+    if (selectedPlayers.some((p) => p.id === player.id)) {
+      return;
+    }
+
+    // If user clicked a specific slot (e.g. dps2) and the player's role matches, place them right there
+    if (
+      explicitSlot &&
+      SLOT_METADATA[explicitSlot].expectedRole === player.role
+    ) {
+      setDraftSlots((prev) => ({ ...prev, [explicitSlot]: player }));
+      setIsRoleModalOpen(false);
+      return;
+    }
+
+    // Otherwise auto-slot into the first available slot for that role
     if (player.role === 'TANK') {
-      if (!slots.tank) {
-        setSlots((prev) => ({ ...prev, tank: player }));
+      if (!draftSlots.tank) {
+        setDraftSlots((prev) => ({ ...prev, tank: player }));
       } else {
         setFeedback({
           type: 'error',
-          message: 'Remove your current Tank first to select a new Tank.',
+          message:
+            'Your Tank slot is full. Click the X on your current Tank or click the Tank card to swap.',
         });
       }
     } else if (player.role === 'DPS') {
-      if (!slots.dps1) {
-        setSlots((prev) => ({ ...prev, dps1: player }));
-      } else if (!slots.dps2) {
-        setSlots((prev) => ({ ...prev, dps2: player }));
+      if (!draftSlots.dps1) {
+        setDraftSlots((prev) => ({ ...prev, dps1: player }));
+      } else if (!draftSlots.dps2) {
+        setDraftSlots((prev) => ({ ...prev, dps2: player }));
       } else {
         setFeedback({
           type: 'error',
-          message: 'Both DPS slots are full. Remove a DPS player first.',
+          message:
+            'Both DPS slots are full. Remove a DPS player first to experiment with a new one.',
         });
       }
     } else if (player.role === 'SUPPORT') {
-      if (!slots.sup1) {
-        setSlots((prev) => ({ ...prev, sup1: player }));
-      } else if (!slots.sup2) {
-        setSlots((prev) => ({ ...prev, sup2: player }));
+      if (!draftSlots.sup1) {
+        setDraftSlots((prev) => ({ ...prev, sup1: player }));
+      } else if (!draftSlots.sup2) {
+        setDraftSlots((prev) => ({ ...prev, sup2: player }));
       } else {
         setFeedback({
           type: 'error',
-          message: 'Both Support slots are full. Remove a Support first.',
+          message:
+            'Both Support slots are full. Remove a Support player first to experiment with a new one.',
         });
       }
     }
+
+    setIsRoleModalOpen(false);
   };
 
   const handleRemoveSlot = (slotKey: SlotKey) => {
     setFeedback(null);
-    setSlots((prev) => ({ ...prev, [slotKey]: null }));
+    setDraftSlots((prev) => ({ ...prev, [slotKey]: null }));
   };
 
+  const handleResetDraft = () => {
+    setFeedback(null);
+    setDraftSlots(savedSlots);
+    setActiveSlotKey(null);
+  };
+
+  // Manual 'Save Lineup' action — commits local draft state to Supabase
   const handleSaveSquad = async () => {
     setFeedback(null);
+
     if (!userId) {
       setFeedback({
         type: 'error',
@@ -209,18 +313,26 @@ export default function MyTeamPage() {
       });
       return;
     }
-    if (!activeGw) return;
+
+    if (!activeGw) {
+      setFeedback({
+        type: 'error',
+        message: 'No active Gameweek found.',
+      });
+      return;
+    }
 
     if (
-      !slots.tank ||
-      !slots.dps1 ||
-      !slots.dps2 ||
-      !slots.sup1 ||
-      !slots.sup2
+      !draftSlots.tank ||
+      !draftSlots.dps1 ||
+      !draftSlots.dps2 ||
+      !draftSlots.sup1 ||
+      !draftSlots.sup2
     ) {
       setFeedback({
         type: 'error',
-        message: 'Please fill all 5 starting role slots before saving.',
+        message:
+          'You must fill all 5 starting role slots (1 Tank, 2 DPS, 2 Support) before saving to the database.',
       });
       return;
     }
@@ -228,7 +340,9 @@ export default function MyTeamPage() {
     if (totalCost > maxBudget) {
       setFeedback({
         type: 'error',
-        message: `Roster cost ($${totalCost.toFixed(1)}M) exceeds the $${maxBudget}M salary cap.`,
+        message: `Roster cost ($${totalCost.toFixed(
+          1
+        )}M) exceeds the $${maxBudget}M salary cap.`,
       });
       return;
     }
@@ -249,11 +363,11 @@ export default function MyTeamPage() {
     const payload = {
       user_id: userId,
       gameweek_id: activeGw.id,
-      tank_id: slots.tank.id,
-      dps1_id: slots.dps1.id,
-      dps2_id: slots.dps2.id,
-      sup1_id: slots.sup1.id,
-      sup2_id: slots.sup2.id,
+      tank_id: draftSlots.tank.id,
+      dps1_id: draftSlots.dps1.id,
+      dps2_id: draftSlots.dps2.id,
+      sup1_id: draftSlots.sup1.id,
+      sup2_id: draftSlots.sup2.id,
       transfers_used: existingRoster?.transfers_used ?? 0,
     };
 
@@ -269,9 +383,10 @@ export default function MyTeamPage() {
       setFeedback({ type: 'error', message: error.message });
     } else {
       setExistingRoster(data as UserRoster);
+      setSavedSlots(draftSlots);
       setFeedback({
         type: 'success',
-        message: `Starting 5 locked in for ${activeGw.name}!`,
+        message: `Lineup saved to database for ${activeGw.name}!`,
       });
     }
   };
@@ -298,39 +413,53 @@ export default function MyTeamPage() {
     label: string,
     expectedRole: PlayerRole
   ) => {
-    const player = slots[slotKey];
+    const player = draftSlots[slotKey];
+    const savedPlayer = savedSlots[slotKey];
+    const isChangedInDraft =
+      (player?.id ?? null) !== (savedPlayer?.id ?? null);
+    const isTargeted = activeSlotKey === slotKey;
 
     return (
       <div
         key={slotKey}
-        onClick={() => {
-          if (!player) setRoleFilter(expectedRole);
-        }}
-        className={`relative rounded-2xl border p-4 transition-all flex flex-col justify-between min-h-[135px] ${
-          player
-            ? 'bg-zinc-900/90 border-zinc-700/90 shadow-lg'
-            : 'bg-zinc-950/60 border-dashed border-zinc-800 hover:border-orange-500/50 cursor-pointer'
+        onClick={() => handleSlotClick(slotKey)}
+        className={`relative rounded-2xl border p-4 transition-all flex flex-col justify-between min-h-[140px] cursor-pointer ${
+          isTargeted
+            ? 'bg-orange-500/10 border-orange-500 ring-2 ring-orange-500/30 shadow-xl'
+            : player
+            ? isChangedInDraft
+              ? 'bg-zinc-900/95 border-amber-500/60 shadow-lg'
+              : 'bg-zinc-900/90 border-zinc-700/90 hover:border-orange-500/50 shadow-lg'
+            : 'bg-zinc-950/60 border-dashed border-zinc-800 hover:border-orange-500/60'
         }`}
       >
         <div className="flex items-center justify-between">
           <RoleBadge role={expectedRole} size="sm" />
-          {player ? (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                handleRemoveSlot(slotKey);
-              }}
-              disabled={isLocked}
-              className="p-1 rounded-lg bg-zinc-800 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-400 transition-colors disabled:opacity-40"
-              title="Remove player"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          ) : (
-            <span className="text-[10px] font-bold uppercase text-zinc-500">
-              Empty Slot
-            </span>
-          )}
+          <div className="flex items-center gap-1.5">
+            {isChangedInDraft && (
+              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                Draft
+              </span>
+            )}
+            {player ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRemoveSlot(slotKey);
+                }}
+                disabled={isLocked}
+                className="p-1 rounded-lg bg-zinc-800 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-400 transition-colors disabled:opacity-40"
+                title="Remove from draft"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <span className="text-[10px] font-bold uppercase text-zinc-500">
+                Empty Slot
+              </span>
+            )}
+          </div>
         </div>
 
         {player ? (
@@ -341,11 +470,14 @@ export default function MyTeamPage() {
             <h4 className="text-base font-black text-white truncate">
               {player.name}
             </h4>
+            <p className="text-[10px] text-zinc-500 mt-0.5">
+              Click card to swap {label}
+            </p>
           </div>
         ) : (
-          <div className="my-3 flex flex-col items-center justify-center text-center">
-            <Plus className="w-5 h-5 text-zinc-600 mb-1" />
-            <span className="text-xs font-bold text-zinc-500">
+          <div className="my-3 flex flex-col items-center justify-center text-center group">
+            <Plus className="w-5 h-5 text-zinc-500 group-hover:text-orange-400 mb-1 transition-colors" />
+            <span className="text-xs font-bold text-zinc-400 group-hover:text-white transition-colors">
               Select {label}
             </span>
           </div>
@@ -370,7 +502,7 @@ export default function MyTeamPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 pb-24">
       {/* Playoff Wildcard Banner */}
       {activeGw?.is_playoffs && (
         <div className="rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-zinc-900 p-4 flex items-center gap-3">
@@ -393,12 +525,20 @@ export default function MyTeamPage() {
               Active Stage
             </p>
             <p className="text-base font-black text-white mt-0.5">
-              {activeGw?.name ?? 'GW1'}
+              {activeGw ? `GW${activeGw.number}` : 'GW1'}
             </p>
           </div>
-          {isLocked && (
+          {isLocked ? (
             <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-rose-500/15 text-rose-400 text-xs font-bold">
               <Lock className="w-3.5 h-3.5" /> Locked
+            </span>
+          ) : hasUnsavedChanges ? (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[11px] font-bold">
+              Unsaved Draft
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-emerald-500/15 text-emerald-400 text-[11px] font-bold">
+              Saved
             </span>
           )}
         </div>
@@ -437,7 +577,7 @@ export default function MyTeamPage() {
           <Shield className="w-6 h-6 text-orange-500/60" />
         </div>
 
-        <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-4 flex items-center justify-between">
+        <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-4 flex items-center justify-between gap-2">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
               Team Limit Rule
@@ -447,9 +587,10 @@ export default function MyTeamPage() {
             </p>
           </div>
           <button
+            type="button"
             onClick={handleSaveSquad}
             disabled={saving || isLocked}
-            className="bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 transition-all"
+            className="bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 transition-all shrink-0"
           >
             {saving ? 'Saving...' : 'Save Lineup'}
           </button>
@@ -475,10 +616,14 @@ export default function MyTeamPage() {
 
       {/* Visual Overwatch Pitch (1 Tank Front, 2 DPS Middle, 2 Support Back) */}
       <div className="relative rounded-3xl border border-zinc-800 bg-gradient-to-b from-[#101624] via-[#0b0e17] to-[#090b10] p-6 sm:p-8 shadow-2xl overflow-hidden">
-        <div className="text-center mb-6">
+        <div className="text-center mb-6 space-y-1">
           <span className="text-[10px] font-extrabold uppercase tracking-widest text-orange-400 bg-orange-500/10 border border-orange-500/20 px-3 py-1 rounded-full">
             Starting Formation (1 - 2 - 2)
           </span>
+          <p className="text-xs text-zinc-400 pt-1">
+            Click any slot below to open the role-filtered player selector, then
+            click <strong className="text-white">Save Lineup</strong> when ready.
+          </p>
         </div>
 
         <div className="space-y-6 max-w-3xl mx-auto">
@@ -502,21 +647,31 @@ export default function MyTeamPage() {
       </div>
 
       {/* Filterable Player Market Underneath */}
-      <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-5">
+      <div
+        id="player-market"
+        ref={marketSectionRef}
+        className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-5 scroll-mt-20"
+      >
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
-            <h2 className="text-lg font-black text-white">
-              OWCS Pacific Player Market
-            </h2>
-            <p className="text-xs text-zinc-400">
-              Filter by role, team, or price and click any available pro player
-              to slot them into your starting formation.
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-lg font-black text-white">
+                OWCS Pacific Player Market
+              </h2>
+              {activeSlotKey && (
+                <span className="text-xs font-extrabold px-2.5 py-0.5 rounded-full bg-orange-500/15 text-orange-400 border border-orange-500/30">
+                  Picking for: {SLOT_METADATA[activeSlotKey].label}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              Experiment freely with combinations—changes stay in your local
+              draft until you click Save Lineup.
             </p>
           </div>
 
           {/* Filter Controls */}
           <div className="flex flex-wrap items-center gap-3">
-            {/* Search Input */}
             <div className="relative">
               <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
@@ -528,11 +683,14 @@ export default function MyTeamPage() {
               />
             </div>
 
-            {/* Role Filter Pills */}
             {(['ALL', 'TANK', 'DPS', 'SUPPORT'] as const).map((r) => (
               <button
                 key={r}
-                onClick={() => setRoleFilter(r)}
+                type="button"
+                onClick={() => {
+                  setRoleFilter(r);
+                  if (r === 'ALL') setActiveSlotKey(null);
+                }}
                 className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
                   roleFilter === r
                     ? 'bg-orange-500 text-zinc-950'
@@ -543,7 +701,6 @@ export default function MyTeamPage() {
               </button>
             ))}
 
-            {/* Team Dropdown */}
             <select
               value={teamFilter}
               onChange={(e) => setTeamFilter(e.target.value)}
@@ -559,13 +716,13 @@ export default function MyTeamPage() {
                 ))}
             </select>
 
-            {/* Max Price Dropdown */}
             <select
               value={maxPriceFilter}
               onChange={(e) => setMaxPriceFilter(Number(e.target.value))}
               className="bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-bold text-white"
             >
-              <option value={30}>Max Price: Any</option>
+              <option value={50}>Max Price: Any</option>
+              <option value={25}>Under $25.0M</option>
               <option value={22}>Under $22.0M</option>
               <option value={20}>Under $20.0M</option>
               <option value={18.5}>Under $18.5M</option>
@@ -574,67 +731,268 @@ export default function MyTeamPage() {
         </div>
 
         {/* Market Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {filteredMarket.map((player) => {
-            const alreadyPicked = selectedPlayers.some(
-              (p) => p.id === player.id
-            );
-            const currentTeamCount = teamCounts[player.team_id] ?? 0;
-            const teamCapReached =
-              !alreadyPicked && currentTeamCount >= maxPerTeam;
+        {filteredMarket.length === 0 ? (
+          <div className="py-12 text-center border border-dashed border-zinc-800 rounded-xl text-xs text-zinc-500">
+            No players match the current filter criteria.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {filteredMarket.map((player) => {
+              const alreadyPicked = selectedPlayers.some(
+                (p) => p.id === player.id
+              );
+              const currentTeamCount = teamCounts[player.team_id] ?? 0;
+              // If replacing a player currently in activeSlotKey from the same team, don't block
+              const activeSlotPlayer = activeSlotKey
+                ? draftSlots[activeSlotKey]
+                : null;
+              const effectiveTeamCount =
+                activeSlotPlayer &&
+                activeSlotPlayer.role === player.role &&
+                activeSlotPlayer.team_id === player.team_id
+                  ? currentTeamCount - 1
+                  : currentTeamCount;
 
-            return (
-              <div
-                key={player.id}
-                className={`rounded-xl border p-4 flex flex-col justify-between transition-all ${
-                  alreadyPicked
-                    ? 'border-orange-500/40 bg-orange-500/5 opacity-60'
-                    : 'border-zinc-800/90 bg-zinc-900/60 hover:border-zinc-700'
+              const teamCapReached =
+                !alreadyPicked && effectiveTeamCount >= maxPerTeam;
+
+              return (
+                <div
+                  key={player.id}
+                  className={`rounded-xl border p-4 flex flex-col justify-between transition-all ${
+                    alreadyPicked
+                      ? 'border-orange-500/40 bg-orange-500/5 opacity-60'
+                      : 'border-zinc-800/90 bg-zinc-900/60 hover:border-zinc-700'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <RoleBadge role={player.role} size="sm" />
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                        {player.teams?.code ?? 'OWCS'}
+                      </span>
+                    </div>
+                    <p className="text-base font-black text-white">
+                      {player.name}
+                    </p>
+                    <p className="text-xs text-zinc-400">
+                      {player.teams?.name}
+                    </p>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between">
+                    <span className="text-sm font-black text-emerald-400">
+                      ${Number(player.price).toFixed(1)}M
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleSelectPlayerIntoDraft(player, activeSlotKey)
+                      }
+                      disabled={alreadyPicked || teamCapReached || isLocked}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all ${
+                        alreadyPicked
+                          ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                          : teamCapReached
+                          ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
+                          : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
+                      }`}
+                    >
+                      {alreadyPicked
+                        ? 'In Draft'
+                        : teamCapReached
+                        ? 'Team Max'
+                        : '+ Select'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Sticky Bottom Budget & Manual Save Bar (Always Visible) */}
+      <div className="fixed bottom-0 inset-x-0 z-30 border-t border-zinc-800 bg-[#0b0d13]/95 backdrop-blur-md shadow-2xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-6">
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
+                Draft Budget Remaining
+              </span>
+              <span
+                className={`text-sm sm:text-base font-black ${
+                  remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
                 }`}
               >
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-2">
-                    <RoleBadge role={player.role} size="sm" />
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
-                      {player.teams?.code ?? 'OWCS'}
-                    </span>
-                  </div>
-                  <p className="text-base font-black text-white">
-                    {player.name}
-                  </p>
-                  <p className="text-xs text-zinc-400">
-                    {player.teams?.name}
-                  </p>
-                </div>
+                ${remainingBudget.toFixed(1)}M{' '}
+                <span className="text-xs text-zinc-500 font-normal">
+                  / ${maxBudget.toFixed(0)}M
+                </span>
+              </span>
+            </div>
 
-                <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between">
-                  <span className="text-sm font-black text-emerald-400">
-                    ${Number(player.price).toFixed(1)}M
-                  </span>
+            <div className="h-7 w-px bg-zinc-800 hidden sm:block" />
 
-                  <button
-                    onClick={() => handleAddPlayer(player)}
-                    disabled={alreadyPicked || teamCapReached || isLocked}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all ${
-                      alreadyPicked
-                        ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                        : teamCapReached
-                        ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
-                        : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
-                    }`}
-                  >
-                    {alreadyPicked
-                      ? 'Selected'
-                      : teamCapReached
-                      ? 'Team Max'
-                      : '+ Add'}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
+                Draft Slots Filled
+              </span>
+              <span className="text-sm sm:text-base font-black text-white">
+                {selectedPlayers.length} / 5{' '}
+                <span className="text-xs text-zinc-500 font-normal">
+                  (Max {maxPerTeam}/team)
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 ml-auto">
+            {hasUnsavedChanges && (
+              <button
+                type="button"
+                onClick={handleResetDraft}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Reset Draft
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={handleSaveSquad}
+              disabled={saving || isLocked}
+              className="inline-flex items-center gap-2 bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-5 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 transition-all"
+            >
+              <Save className="w-4 h-4" />
+              {saving ? 'Saving Lineup...' : 'Save Lineup'}
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Role-Filtered Quick Selection Modal when clicking a Pitch Slot */}
+      {isRoleModalOpen && activeSlotKey && (
+        <div
+          onClick={() => setIsRoleModalOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-2xl rounded-2xl border border-zinc-800 bg-[#0d1018] p-6 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <RoleBadge
+                  role={SLOT_METADATA[activeSlotKey].expectedRole}
+                  size="md"
+                />
+                <div>
+                  <h3 className="text-base font-black text-white">
+                    Select {SLOT_METADATA[activeSlotKey].label}
+                  </h3>
+                  <p className="text-xs text-zinc-400">
+                    Remaining Draft Budget:{' '}
+                    <span className="text-emerald-400 font-bold">
+                      ${remainingBudget.toFixed(1)}M
+                    </span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => scrollToMarketWithRole(activeSlotKey)}
+                  className="inline-flex items-center gap-1 text-xs font-bold text-orange-400 hover:underline px-2 py-1"
+                >
+                  <ArrowDownCircle className="w-3.5 h-3.5" /> View in Full
+                  Market
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsRoleModalOpen(false)}
+                  className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="max-h-96 overflow-y-auto space-y-2 pr-1">
+              {players
+                .filter(
+                  (p) =>
+                    p.role === SLOT_METADATA[activeSlotKey].expectedRole &&
+                    !p.teams?.is_eliminated
+                )
+                .map((player) => {
+                  const alreadyPicked = selectedPlayers.some(
+                    (p) => p.id === player.id
+                  );
+                  const currentSlotPlayer = draftSlots[activeSlotKey];
+                  const currentTeamCount = teamCounts[player.team_id] ?? 0;
+                  const effectiveTeamCount =
+                    currentSlotPlayer &&
+                    currentSlotPlayer.team_id === player.team_id
+                      ? currentTeamCount - 1
+                      : currentTeamCount;
+                  const teamCapReached =
+                    !alreadyPicked && effectiveTeamCount >= maxPerTeam;
+
+                  return (
+                    <div
+                      key={player.id}
+                      className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-3.5 flex items-center justify-between hover:border-zinc-700"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-extrabold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                          {player.teams?.code ?? 'OWCS'}
+                        </span>
+                        <div>
+                          <p className="font-bold text-white text-sm">
+                            {player.name}
+                          </p>
+                          <p className="text-[11px] text-zinc-400">
+                            {player.teams?.name}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-black text-emerald-400">
+                          ${Number(player.price).toFixed(1)}M
+                        </span>
+                        <button
+                          type="button"
+                          disabled={alreadyPicked || teamCapReached}
+                          onClick={() =>
+                            handleSelectPlayerIntoDraft(player, activeSlotKey)
+                          }
+                          className={`px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all ${
+                            alreadyPicked
+                              ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                              : teamCapReached
+                              ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
+                              : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
+                          }`}
+                        >
+                          {alreadyPicked
+                            ? 'Selected'
+                            : teamCapReached
+                            ? 'Team Max'
+                            : 'Select'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

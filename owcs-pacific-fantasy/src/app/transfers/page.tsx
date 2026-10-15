@@ -6,17 +6,24 @@ import {
   Clock,
   AlertTriangle,
   CheckCircle2,
-  Sparkles,
   RefreshCw,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import RoleBadge from '@/components/RoleBadge';
 import type { Player, Gameweek, UserRoster } from '@/types/fantasy';
 
-type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
+// ============================================================================
+// COMMISSIONER CONFIG: NEXT TRANSFER LOCK DEADLINE
+// Change this ISO date string anytime (or set NEXT_PUBLIC_TRANSFER_DEADLINE)
+// Format: YYYY-MM-DDTHH:mm:ss+08:00 (AWST / SGT) or Z (UTC)
+// ============================================================================
+export const TRANSFER_LOCK_DEADLINE =
+  process.env.NEXT_PUBLIC_TRANSFER_DEADLINE || '2026-10-26T18:00:00+08:00';
 
-// Matches the SQL trigger penalty parameter (set to 10 or 4 to match your league preference)
+// Extra transfer penalty points (matches SQL trigger setting)
 const EXTRA_TRANSFER_PENALTY_PTS = 10;
+
+type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
 
 export default function TransfersPage() {
   const supabase = getSupabaseBrowserClient();
@@ -47,7 +54,7 @@ export default function TransfersPage() {
   const [activeSlotToSwap, setActiveSlotToSwap] = useState<SlotKey | null>(
     null
   );
-  const [countdownText, setCountdownText] = useState<string>('--:--:--');
+  const [countdownText, setCountdownText] = useState<string>('Loading...');
   const [isLocked, setIsLocked] = useState<boolean>(false);
 
   const [showPenaltyModal, setShowPenaltyModal] = useState<boolean>(false);
@@ -56,6 +63,46 @@ export default function TransfersPage() {
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+
+  // Live 1-second Countdown Timer driven by TRANSFER_LOCK_DEADLINE
+  useEffect(() => {
+    const targetMs = new Date(TRANSFER_LOCK_DEADLINE).getTime();
+
+    const updateTimer = () => {
+      if (Number.isNaN(targetMs)) {
+        setCountdownText('INVALID DATE CONFIG');
+        return;
+      }
+
+      const diff = targetMs - Date.now();
+
+      if (diff <= 0) {
+        setIsLocked(true);
+        setCountdownText('LINEUPS LOCKED');
+        return;
+      }
+
+      setIsLocked(false);
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
+      const mins = Math.floor((diff / 1000 / 60) % 60);
+      const secs = Math.floor((diff / 1000) % 60);
+
+      setCountdownText(
+        `${days > 0 ? `${days}d ` : ''}${String(hours).padStart(
+          2,
+          '0'
+        )}h : ${String(mins).padStart(2, '0')}m : ${String(secs).padStart(
+          2,
+          '0'
+        )}s`
+      );
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     async function loadTransferState() {
@@ -76,7 +123,22 @@ export default function TransfersPage() {
           .order('price', { ascending: false }),
       ]);
 
-      const gws = (gwData as Gameweek[]) ?? [];
+      let gws = (gwData as Gameweek[]) ?? [];
+      if (gws.length === 0) {
+        const { data: createdGw } = await supabase
+          .from('gameweeks')
+          .insert({
+            number: 1,
+            name: 'Gameweek 1 - Day 1',
+            lock_time: TRANSFER_LOCK_DEADLINE,
+            is_playoffs: false,
+            status: 'ACTIVE',
+          })
+          .select()
+          .single();
+        if (createdGw) gws = [createdGw as Gameweek];
+      }
+
       const currentGw =
         gws.find((g) => g.status === 'ACTIVE') ??
         gws.find((g) => g.status === 'UPCOMING') ??
@@ -105,11 +167,11 @@ export default function TransfersPage() {
 
           const byId = Object.fromEntries(allPlayers.map((p) => [p.id, p]));
           const mapped: Record<SlotKey, Player | null> = {
-            tank: byId[baseline.tank_id] ?? null,
-            dps1: byId[baseline.dps1_id] ?? null,
-            dps2: byId[baseline.dps2_id] ?? null,
-            sup1: byId[baseline.sup1_id] ?? null,
-            sup2: byId[baseline.sup2_id] ?? null,
+            tank: baseline.tank_id ? byId[baseline.tank_id] ?? null : null,
+            dps1: baseline.dps1_id ? byId[baseline.dps1_id] ?? null : null,
+            dps2: baseline.dps2_id ? byId[baseline.dps2_id] ?? null : null,
+            sup1: baseline.sup1_id ? byId[baseline.sup1_id] ?? null : null,
+            sup2: baseline.sup2_id ? byId[baseline.sup2_id] ?? null : null,
           };
           setOriginalSlots(mapped);
           setDraftSlots(mapped);
@@ -120,47 +182,9 @@ export default function TransfersPage() {
     loadTransferState();
   }, [supabase]);
 
-  // Live 1-second Countdown Timer to (lock_time - 15 minutes)
-  useEffect(() => {
-    if (!activeGw) return;
-
-    const updateTimer = () => {
-      const lockTimeMs =
-        new Date(activeGw.lock_time).getTime() - 15 * 60 * 1000;
-      const diff = lockTimeMs - Date.now();
-
-      if (diff <= 0 || activeGw.status === 'COMPLETED') {
-        setIsLocked(true);
-        setCountdownText('LINEUPS LOCKED');
-        return;
-      }
-
-      setIsLocked(false);
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
-      const mins = Math.floor((diff / 1000 / 60) % 60);
-      const secs = Math.floor((diff / 1000) % 60);
-
-      setCountdownText(
-        `${days > 0 ? `${days}d ` : ''}${String(hours).padStart(
-          2,
-          '0'
-        )}h : ${String(mins).padStart(2, '0')}m : ${String(secs).padStart(
-          2,
-          '0'
-        )}s`
-      );
-    };
-
-    updateTimer();
-    const interval = setInterval(updateTimer, 1000);
-    return () => clearInterval(interval);
-  }, [activeGw]);
-
-  // Free Transfer Rules: GW1 = Unlimited, GW2-5 = 1 Free, Playoffs = 3 Free
+  // Free Transfer Allowance: 1 Free in Regular Season, 3 Free in Playoffs
   const freeTransferAllowance = useMemo(() => {
     if (!activeGw) return 1;
-    if (activeGw.number === 1) return 99;
     return activeGw.is_playoffs ? 3 : 1;
   }, [activeGw]);
 
@@ -227,7 +251,7 @@ export default function TransfersPage() {
     ) {
       setStatusMsg({
         type: 'error',
-        text: 'All 5 starting slots must be filled.',
+        text: 'All 5 starting slots must be filled before confirming transfers.',
       });
       return;
     }
@@ -258,7 +282,7 @@ export default function TransfersPage() {
       setActiveSlotToSwap(null);
       setStatusMsg({
         type: 'success',
-        text: 'Transfers confirmed and locked in!',
+        text: 'Transfers confirmed and saved to database!',
       });
     }
   };
@@ -299,8 +323,8 @@ export default function TransfersPage() {
               DAILY TRANSFERS & LOCK HUB
             </h1>
             <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-              Click any starter below to swap them out before the daily 15-minute
-              pre-match lock.
+              Click any starter below to test swaps in your local draft, then
+              confirm before the deadline lock.
             </p>
           </div>
 
@@ -328,9 +352,7 @@ export default function TransfersPage() {
                 Free Transfers Remaining
               </p>
               <p className="text-sm font-black text-emerald-400">
-                {freeTransferAllowance > 50
-                  ? 'UNLIMITED (GW1)'
-                  : `${freeTransfersRemaining} Free`}
+                {freeTransfersRemaining} Free
                 {totalPointHit > 0 && (
                   <span className="ml-2 text-rose-400">
                     (-{totalPointHit} pts hit)
@@ -367,7 +389,11 @@ export default function TransfersPage() {
             <h2 className="text-base font-black text-white">
               1. Select a Player to Swap Out
             </h2>
-            <span className="text-xs font-bold text-zinc-400">
+            <span
+              className={`text-xs font-bold ${
+                draftCost > maxBudget ? 'text-rose-400' : 'text-zinc-400'
+              }`}
+            >
               Budget: ${draftCost.toFixed(1)}M / ${maxBudget.toFixed(0)}M
             </span>
           </div>
@@ -409,7 +435,7 @@ export default function TransfersPage() {
                         </p>
                         {isModified && (
                           <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                            Transferred In (was {orig?.name})
+                            Draft Swap (was {orig?.name})
                           </span>
                         )}
                       </div>
@@ -435,6 +461,7 @@ export default function TransfersPage() {
 
           <div className="pt-4 border-t border-zinc-800 flex items-center justify-between">
             <button
+              type="button"
               onClick={() => {
                 setDraftSlots(originalSlots);
                 setActiveSlotToSwap(null);
@@ -446,6 +473,7 @@ export default function TransfersPage() {
             </button>
 
             <button
+              type="button"
               onClick={handleConfirmOrWarn}
               disabled={
                 saving ||
@@ -500,6 +528,7 @@ export default function TransfersPage() {
                       ${Number(candidate.price).toFixed(1)}M
                     </span>
                     <button
+                      type="button"
                       onClick={() =>
                         setDraftSlots((prev) => ({
                           ...prev,
@@ -541,12 +570,14 @@ export default function TransfersPage() {
             </p>
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
               <button
+                type="button"
                 onClick={() => setShowPenaltyModal(false)}
                 className="px-4 py-2 rounded-xl text-xs font-bold text-zinc-400 hover:text-white bg-zinc-800"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={executeTransferCommit}
                 className="px-4 py-2 rounded-xl text-xs font-black bg-rose-500 hover:bg-rose-400 text-white"
               >
