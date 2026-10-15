@@ -413,11 +413,11 @@ export default function AdminDashboardPage() {
         onChangeMatchName={setMatchName}
         onStatsCommitted={loadAdminData}
         onBanner={setBanner}
-    
-    <div className="space-y-10">
+      />
+
       {/* Header */}
       <div className="rounded-2xl border border-orange-500/30 bg-gradient-to-r from-zinc-900 via-[#111522] to-zinc-950 p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-3.5">
+        <div className="flex items-center gap-3">
           <div className="p-3 rounded-xl bg-orange-500/15 text-orange-400 border border-orange-500/30">
             <ShieldAlert className="w-6 h-6" />
           </div>
@@ -426,8 +426,7 @@ export default function AdminDashboardPage() {
               OWCS COMMISSIONER ADMIN HUB
             </h1>
             <p className="text-xs text-zinc-400">
-              Gemini Flash Scoreboard OCR Ingestion, Automated Point
-              Recalculation & Schedule Controls
+              Gemini Flash Scoreboard OCR Ingestion, Automated Point Recalculation & Schedule Controls
             </p>
           </div>
         </div>
