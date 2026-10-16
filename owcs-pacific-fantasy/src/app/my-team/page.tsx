@@ -387,7 +387,7 @@ export default function MyTeamPage() {
       return;
     }
 
-    const activeFiveIds = [
+    const newRosterIds = [
       draftSlots.tank.id,
       draftSlots.dps1.id,
       draftSlots.dps2.id,
@@ -395,7 +395,7 @@ export default function MyTeamPage() {
       draftSlots.sup2.id,
     ];
 
-    if (!draftCaptainId || !activeFiveIds.includes(draftCaptainId)) {
+    if (!draftCaptainId || !newRosterIds.includes(draftCaptainId)) {
       setFeedback({
         type: 'error',
         message:
@@ -427,23 +427,12 @@ export default function MyTeamPage() {
 
     setSaving(true);
 
-    const payload = {
-      user_id: userId,
-      gameweek_id: activeGw.id,
-      tank_id: draftSlots.tank.id,
-      dps1_id: draftSlots.dps1.id,
-      dps2_id: draftSlots.dps2.id,
-      sup1_id: draftSlots.sup1.id,
-      sup2_id: draftSlots.sup2.id,
-      captain_id: draftCaptainId,
-      transfers_used: existingRoster?.transfers_used ?? 0,
-    };
-
-    const { data, error } = await supabase
-      .from('user_rosters')
-      .upsert(payload, { onConflict: 'user_id,gameweek_id' })
-      .select()
-      .single();
+    // Send ONLY the Gameweek ID, 5-player UUID array, and Captain ID
+    const { data, error } = await supabase.rpc('submit_roster_lineup', {
+      p_gameweek_id: activeGw.id,
+      p_new_roster: newRosterIds,
+      p_captain_id: draftCaptainId,
+    });
 
     setSaving(false);
 
@@ -455,7 +444,7 @@ export default function MyTeamPage() {
       setSavedCaptainId(draftCaptainId);
       setFeedback({
         type: 'success',
-        message: `Lineup & Captain (${draftCaptainPlayer?.name}) locked in for ${activeGw.name}!`,
+        message: `Lineup & Captain (${draftCaptainPlayer?.name}) securely verified and saved for ${activeGw.name}!`,
       });
     }
   };

@@ -275,35 +275,37 @@ export default function TransfersPage() {
 
     setSaving(true);
 
-    const { error } = await supabase.from('user_rosters').upsert(
-      {
-        user_id: userId,
-        gameweek_id: activeGw.id,
-        tank_id: draftSlots.tank.id,
-        dps1_id: draftSlots.dps1.id,
-        dps2_id: draftSlots.dps2.id,
-        sup1_id: draftSlots.sup1.id,
-        sup2_id: draftSlots.sup2.id,
-        transfers_used: isUnlimitedFreeWindow ? 0 : totalTransfersAfterCommit,
-      },
-      { onConflict: 'user_id,gameweek_id' }
-    );
+    // Send ONLY the 5-player UUID array; backend calculates transfers_used
+    const newRosterIds = [
+      draftSlots.tank.id,
+      draftSlots.dps1.id,
+      draftSlots.dps2.id,
+      draftSlots.sup1.id,
+      draftSlots.sup2.id,
+    ];
+
+    const { data, error } = await supabase.rpc('submit_roster_lineup', {
+      p_gameweek_id: activeGw.id,
+      p_new_roster: newRosterIds,
+      p_captain_id: null,
+    });
 
     setSaving(false);
 
     if (error) {
       setStatusMsg({ type: 'error', text: error.message });
     } else {
+      const savedRecord = data as UserRoster;
       setOriginalSlots(draftSlots);
-      setAlreadyUsedTransfers(
-        isUnlimitedFreeWindow ? 0 : totalTransfersAfterCommit
-      );
+      setAlreadyUsedTransfers(savedRecord?.transfers_used ?? 0);
       setActiveSlotToSwap(null);
       setStatusMsg({
         type: 'success',
         text: isUnlimitedFreeWindow
           ? 'Pre-Season lineup updated! (0 point penalty)'
-          : 'Transfers confirmed and saved to database!',
+          : `Transfers confirmed! Server recorded ${
+              savedRecord?.transfers_used ?? 0
+            } total transfer(s) used this Gameweek.`,
       });
     }
   };
