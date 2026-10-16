@@ -112,3 +112,37 @@ export interface ExtractedScoreboardRow {
   healing: number;
   map_won: boolean;
 }
+
+export interface Profile {
+  id: string;
+  discord_id: string;
+  username: string;
+  avatar_url: string | null;
+  is_admin: boolean;
+  personal_budget: number;
+  created_at: string;
+}
+
+export interface Fixture {
+  id: string;
+  gameweek_id: string;
+  team_a: string;
+  team_b: string;
+  match_time: string;
+  created_at: string;
+  team_a_team?: Team;
+  team_b_team?: Team;
+  gameweeks?: Gameweek;
+}
+
+export interface PriceChangeRow {
+  out_player_id: string;
+  out_player_name: string;
+  out_team_code: string;
+  out_old_price: number;
+  out_gw_points: number;
+  out_expected_score: number;
+  out_difference: number;
+  out_price_delta: number;
+  out_new_price: number;
+}

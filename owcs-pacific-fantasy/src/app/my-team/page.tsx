@@ -1,5 +1,15 @@
 'use client';
 
+import TeamFixturesTooltip from '@/components/TeamFixturesTooltip';
+import type {
+  Player,
+  Team,
+  Gameweek,
+  UserRoster,
+  PlayerRole,
+  Fixture,
+} from '@/types/fantasy';
+
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   Shield,
@@ -19,13 +29,6 @@ import {
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, SCORING_MULTIPLIERS } from '@/lib/config';
 import RoleBadge from '@/components/RoleBadge';
-import type {
-  Player,
-  Team,
-  Gameweek,
-  UserRoster,
-  PlayerRole,
-} from '@/types/fantasy';
 
 type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
 
@@ -49,6 +52,8 @@ export default function MyTeamPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [existingRoster, setExistingRoster] = useState<UserRoster | null>(null);
+  const [userBaseBudget, setUserBaseBudget] = useState<number>(100.0);
+  const [fixtures, setFixtures] = useState<Fixture[]>([]);
 
   // Saved state in DB vs Local experimental draft state
   const [savedSlots, setSavedSlots] = useState<Record<SlotKey, Player | null>>({
@@ -200,9 +205,11 @@ export default function MyTeamPage() {
     );
   }, [activeGw]);
 
-  const maxBudget = activeGw?.is_playoffs
-    ? FANTASY_CONFIG.PLAYOFF_WILDCARD_BUDGET
-    : FANTASY_CONFIG.REGULAR_SEASON_BUDGET;
+  const maxBudget = useMemo(() => {
+  const playoffBoost = activeGw?.is_playoffs ? 5.0 : 0.0;
+  return Number((userBaseBudget + playoffBoost).toFixed(1));
+ }, [userBaseBudget, activeGw]);
+
   const maxPerTeam = activeGw?.is_playoffs
     ? FANTASY_CONFIG.PLAYOFF_WILDCARD_MAX_PER_TEAM
     : FANTASY_CONFIG.REGULAR_SEASON_MAX_PER_TEAM;
@@ -872,9 +879,15 @@ export default function MyTeamPage() {
                     <p className="text-base font-black text-white">
                       {player.name}
                     </p>
-                    <p className="text-xs text-zinc-400">
-                      {player.teams?.name}
-                    </p>
+                    <div className="flex items-center gap-1.5 text-xs text-zinc-400">
+                   <span>{player.teams?.name}</span>
+                     <TeamFixturesTooltip
+                       teamId={player.team_id}
+                       teamCode={player.teams?.code}
+                       fixtures={fixtures}
+                       activeGw={activeGw}
+                          />
+                      </div>
                   </div>
 
                   <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between">

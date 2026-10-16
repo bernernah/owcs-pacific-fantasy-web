@@ -15,6 +15,7 @@ import {
   Edit3,
   ChevronDown,
   ChevronUp,
+  TrendingUp,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import RoleBadge from '@/components/RoleBadge';
@@ -28,6 +29,8 @@ import type {
   PlayerRole,
   ExtractedScoreboardRow,
   GameweekStatus,
+  Fixture,
+  PriceChangeRow,
 } from '@/types/fantasy';
 
 interface MatchLogRow {
@@ -790,6 +793,27 @@ export default function AdminDashboardPage() {
         )}
       </div>
 
+      {/* AUTOMATED PRICE CHANGE ENGINE & EDITABLE FIXTURES MANAGER */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className="lg:col-span-6">
+          <PriceChangeEngineCard
+            gameweeks={gameweeks}
+            onPricesUpdated={loadAdminData}
+            onBanner={setBanner}
+          />
+        </div>
+        <div className="lg:col-span-6">
+          <FixturesManagerCard
+            gameweeks={gameweeks}
+            teams={teams}
+            onBanner={setBanner}
+          />
+        </div>
+      </div>
+
+      {/* SECTION 4 & 5: SCHEDULE CONTROLS, TEAM MANAGER & QUICK ADD PLAYER */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6"></div>
+
       {/* SECTION 4 & 5: SCHEDULE CONTROLS, TEAM MANAGER & QUICK ADD PLAYER */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-7 rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-4">
@@ -1231,6 +1255,389 @@ function TeamManagerCard({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+function PriceChangeEngineCard({
+  gameweeks,
+  onPricesUpdated,
+  onBanner,
+}: {
+  gameweeks: Gameweek[];
+  onPricesUpdated: () => void;
+  onBanner: (msg: { type: 'success' | 'error'; text: string } | null) => void;
+}) {
+  const supabase = getSupabaseBrowserClient();
+  const [targetGwId, setTargetGwId] = useState<string>(
+    gameweeks[0]?.id ?? ''
+  );
+  const [onlyPlayed, setOnlyPlayed] = useState<boolean>(true);
+  const [processing, setProcessing] = useState<boolean>(false);
+  const [results, setResults] = useState<PriceChangeRow[]>([]);
+
+  useEffect(() => {
+    if (!targetGwId && gameweeks.length > 0) {
+      const active =
+        gameweeks.find((g) => g.status === 'ACTIVE') ?? gameweeks[0];
+      setTargetGwId(active.id);
+    }
+  }, [gameweeks, targetGwId]);
+
+  const handleRunPriceChanges = async () => {
+    if (!targetGwId) return;
+    const gwObj = gameweeks.find((g) => g.id === targetGwId);
+    const confirmed = window.confirm(
+      `Run the Value Expectation Price Change algorithm for ${
+        gwObj?.name ?? 'this Gameweek'
+      }? This will permanently update player prices and adjust manager personal budgets.`
+    );
+    if (!confirmed) return;
+
+    setProcessing(true);
+    onBanner(null);
+
+    const { data, error } = await supabase.rpc(
+      'process_gameweek_price_changes',
+      {
+        p_gameweek_id: targetGwId,
+        p_only_played: onlyPlayed,
+      }
+    );
+
+    setProcessing(false);
+
+    if (error) {
+      onBanner({ type: 'error', text: error.message });
+    } else {
+      const rows = (data as PriceChangeRow[]) ?? [];
+      setResults(rows);
+      const changedCount = rows.filter(
+        (r) => Number(r.out_price_delta) !== 0
+      ).length;
+      onBanner({
+        type: 'success',
+        text: `Processed price changes! ${changedCount} player(s) changed in price and manager personal budgets were updated.`,
+      });
+      onPricesUpdated();
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-5 h-full flex flex-col justify-between">
+      <div className="space-y-4">
+        <div className="flex items-center gap-2.5 border-b border-zinc-800 pb-3">
+          <TrendingUp className="w-5 h-5 text-emerald-400" />
+          <div>
+            <h2 className="text-base font-black text-white">
+              Automated Price Change Engine
+            </h2>
+            <p className="text-[11px] text-zinc-400">
+              Expected Score = Price × 1.5 • Adjusts prices (±$0.5M / ±$1.0M)
+              & manager budgets.
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5">
+              Evaluate Gameweek Performance
+            </label>
+            <select
+              value={targetGwId}
+              onChange={(e) => setTargetGwId(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white"
+            >
+              {gameweeks.map((gw) => (
+                <option key={gw.id} value={gw.id}>
+                  GW{gw.number}: {gw.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <label className="flex items-center gap-2.5 text-xs text-zinc-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={onlyPlayed}
+              onChange={(e) => setOnlyPlayed(e.target.checked)}
+              className="w-4 h-4 accent-orange-500 rounded"
+            />
+            <span>
+              Only adjust players who played at least 1 map in this Gameweek
+            </span>
+          </label>
+        </div>
+
+        {results.length > 0 && (
+          <div className="max-h-60 overflow-y-auto rounded-xl border border-zinc-800">
+            <table className="w-full text-left border-collapse text-[11px]">
+              <thead className="sticky top-0 bg-zinc-900 text-zinc-400 uppercase font-bold border-b border-zinc-800">
+                <tr>
+                  <th className="py-2 px-2.5">Player</th>
+                  <th className="py-2 px-2 text-right">Pts</th>
+                  <th className="py-2 px-2 text-right">Exp</th>
+                  <th className="py-2 px-2 text-right">Diff</th>
+                  <th className="py-2 px-2.5 text-right">New Price</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/60">
+                {results.map((r) => {
+                  const delta = Number(r.out_price_delta);
+                  return (
+                    <tr key={r.out_player_id} className="bg-zinc-950/40">
+                      <td className="py-1.5 px-2.5 font-bold text-white">
+                        <span className="text-[10px] text-zinc-500 mr-1">
+                          [{r.out_team_code}]
+                        </span>
+                        {r.out_player_name}
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono text-zinc-200">
+                        {Number(r.out_gw_points).toFixed(1)}
+                      </td>
+                      <td className="py-1.5 px-2 text-right font-mono text-zinc-400">
+                        {Number(r.out_expected_score).toFixed(1)}
+                      </td>
+                      <td
+                        className={`py-1.5 px-2 text-right font-mono font-bold ${
+                          Number(r.out_difference) >= 0
+                            ? 'text-emerald-400'
+                            : 'text-rose-400'
+                        }`}
+                      >
+                        {Number(r.out_difference) >= 0 ? '+' : ''}
+                        {Number(r.out_difference).toFixed(1)}
+                      </td>
+                      <td className="py-1.5 px-2.5 text-right font-mono font-black">
+                        <span className="text-white">
+                          ${Number(r.out_new_price).toFixed(1)}M
+                        </span>{' '}
+                        {delta !== 0 && (
+                          <span
+                            className={
+                              delta > 0 ? 'text-emerald-400' : 'text-rose-400'
+                            }
+                          >
+                            ({delta > 0 ? `+${delta.toFixed(1)}` : delta.toFixed(1)})
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <button
+        type="button"
+        onClick={handleRunPriceChanges}
+        disabled={processing || !targetGwId}
+        className="w-full inline-flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider py-3 rounded-xl shadow-lg shadow-emerald-500/20 transition-all"
+      >
+        <TrendingUp className="w-4 h-4" />
+        {processing
+          ? 'Calculating & Updating Prices...'
+          : 'Process Gameweek Price Changes'}
+      </button>
+    </div>
+  );
+}
+
+function FixturesManagerCard({
+  gameweeks,
+  teams,
+  onBanner,
+}: {
+  gameweeks: Gameweek[];
+  teams: Team[];
+  onBanner: (msg: { type: 'success' | 'error'; text: string } | null) => void;
+}) {
+  const supabase = getSupabaseBrowserClient();
+
+  const [fixtures, setFixtures] = useState<Fixture[]>([]);
+  const [gwId, setGwId] = useState<string>('');
+  const [teamA, setTeamA] = useState<string>('');
+  const [teamB, setTeamB] = useState<string>('');
+  const [matchTime, setMatchTime] = useState<string>('2026-10-26T18:00');
+  const [saving, setSaving] = useState<boolean>(false);
+
+  const loadFixtures = useCallback(async () => {
+    const { data } = await supabase
+      .from('fixtures')
+      .select(
+        '*, team_a_team:teams!fixtures_team_a_fkey(*), team_b_team:teams!fixtures_team_b_fkey(*), gameweeks(*)'
+      )
+      .order('match_time', { ascending: true });
+    setFixtures((data as Fixture[]) ?? []);
+  }, [supabase]);
+
+  useEffect(() => {
+    loadFixtures();
+  }, [loadFixtures]);
+
+  useEffect(() => {
+    if (!gwId && gameweeks.length > 0) setGwId(gameweeks[0].id);
+    if (!teamA && teams.length > 0) setTeamA(teams[0].id);
+    if (!teamB && teams.length > 1) setTeamB(teams[1].id);
+  }, [gameweeks, teams, gwId, teamA, teamB]);
+
+  const handleAddFixture = async (e: React.FormEvent) => {
+    e.preventDefault();
+    onBanner(null);
+
+    if (!gwId || !teamA || !teamB) return;
+    if (teamA === teamB) {
+      onBanner({
+        type: 'error',
+        text: 'Team A and Team B must be different teams.',
+      });
+      return;
+    }
+
+    setSaving(true);
+    const { error } = await supabase.from('fixtures').insert({
+      gameweek_id: gwId,
+      team_a: teamA,
+      team_b: teamB,
+      match_time: new Date(matchTime).toISOString(),
+    });
+    setSaving(false);
+
+    if (error) {
+      onBanner({ type: 'error', text: error.message });
+    } else {
+      onBanner({ type: 'success', text: 'Fixture added to schedule!' });
+      loadFixtures();
+    }
+  };
+
+  const handleDeleteFixture = async (id: string) => {
+    const { error } = await supabase.from('fixtures').delete().eq('id', id);
+    if (error) {
+      onBanner({ type: 'error', text: error.message });
+    } else {
+      loadFixtures();
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-4 h-full flex flex-col justify-between">
+      <div className="space-y-4">
+        <div className="flex items-center gap-2.5 border-b border-zinc-800 pb-3">
+          <Calendar className="w-5 h-5 text-orange-400" />
+          <div>
+            <h2 className="text-base font-black text-white">
+              Editable Match Fixtures Manager
+            </h2>
+            <p className="text-[11px] text-zinc-400">
+              Powers the upcoming fixture tooltips on /my-team and /transfers.
+            </p>
+          </div>
+        </div>
+
+        <form
+          onSubmit={handleAddFixture}
+          className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3.5 space-y-3"
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <select
+              value={gwId}
+              onChange={(e) => setGwId(e.target.value)}
+              className="bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-2 text-xs font-bold text-white"
+            >
+              {gameweeks.map((gw) => (
+                <option key={gw.id} value={gw.id}>
+                  GW{gw.number}: {gw.name}
+                </option>
+              ))}
+            </select>
+
+            <input
+              type="datetime-local"
+              value={matchTime}
+              onChange={(e) => setMatchTime(e.target.value)}
+              className="bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-2 text-xs text-white"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-center">
+            <select
+              value={teamA}
+              onChange={(e) => setTeamA(e.target.value)}
+              className="bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-2 text-xs font-bold text-white"
+            >
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.code} — {t.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={teamB}
+              onChange={(e) => setTeamB(e.target.value)}
+              className="bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-2 text-xs font-bold text-white"
+            >
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.code} — {t.name}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="bg-orange-500 hover:bg-orange-400 text-zinc-950 font-black text-xs uppercase tracking-wider py-2 px-3 rounded-lg"
+            >
+              {saving ? 'Adding...' : '+ Add Fixture'}
+            </button>
+          </div>
+        </form>
+
+        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+          {fixtures.length === 0 ? (
+            <p className="text-xs text-zinc-500 text-center py-4">
+              No fixtures scheduled yet.
+            </p>
+          ) : (
+            fixtures.map((f) => (
+              <div
+                key={f.id}
+                className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 flex items-center justify-between text-xs"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-black px-2 py-0.5 rounded bg-orange-500/15 text-orange-400 border border-orange-500/30">
+                    GW{f.gameweeks?.number ?? '?'}
+                  </span>
+                  <span className="font-black text-white">
+                    {f.team_a_team?.code ?? 'TBD'} vs{' '}
+                    {f.team_b_team?.code ?? 'TBD'}
+                  </span>
+                  <span className="text-[11px] text-zinc-400 font-mono">
+                    {new Date(f.match_time).toLocaleString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteFixture(f.id)}
+                  className="p-1 text-zinc-500 hover:text-rose-400"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   );

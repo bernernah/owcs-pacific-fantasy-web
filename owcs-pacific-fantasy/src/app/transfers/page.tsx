@@ -12,7 +12,9 @@ import {
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, isPreSeasonNow } from '@/lib/config';
 import RoleBadge from '@/components/RoleBadge';
-import type { Player, Gameweek, UserRoster } from '@/types/fantasy';
+import TeamFixturesTooltip from '@/components/TeamFixturesTooltip';
+import type { Player, Gameweek, UserRoster, Fixture } from '@/types/fantasy';
+
 
 type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
 
@@ -22,6 +24,8 @@ export default function TransfersPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [activeGw, setActiveGw] = useState<Gameweek | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
+  const [userBaseBudget, setUserBaseBudget] = useState<number>(100.0);
+  const [fixtures, setFixtures] = useState<Fixture[]>([]);
 
   const [originalSlots, setOriginalSlots] = useState<
     Record<SlotKey, Player | null>
@@ -109,17 +113,37 @@ export default function TransfersPage() {
       } = await supabase.auth.getUser();
       setUserId(user?.id ?? null);
 
-      const [{ data: gwData }, { data: playerData }] = await Promise.all([
-        supabase
-          .from('gameweeks')
-          .select('*')
-          .order('number', { ascending: true }),
-        supabase
-          .from('players')
-          .select('*, teams(*)')
-          .eq('is_active', true)
-          .order('price', { ascending: false }),
-      ]);
+      const [{ data: gwData }, { data: playerData }, { data: fixtureData }] =
+        await Promise.all([
+          supabase
+            .from('gameweeks')
+            .select('*')
+            .order('number', { ascending: true }),
+          supabase
+            .from('players')
+            .select('*, teams(*)')
+            .eq('is_active', true)
+            .order('price', { ascending: false }),
+          supabase
+            .from('fixtures')
+            .select(
+              '*, team_a_team:teams!fixtures_team_a_fkey(*), team_b_team:teams!fixtures_team_b_fkey(*), gameweeks(*)'
+            )
+            .order('match_time', { ascending: true }),
+        ]);
+
+      setFixtures((fixtureData as Fixture[]) ?? []);
+
+      if (user) {
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('personal_budget')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (prof?.personal_budget) {
+          setUserBaseBudget(Number(prof.personal_budget));
+        }
+      }
 
       let gws = (gwData as Gameweek[]) ?? [];
       if (gws.length === 0) {
@@ -229,9 +253,11 @@ export default function TransfersPage() {
   const totalPointHit =
     extraPaidTransfers * FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS;
 
-  const maxBudget = activeGw?.is_playoffs
-    ? FANTASY_CONFIG.PLAYOFF_WILDCARD_BUDGET
-    : FANTASY_CONFIG.REGULAR_SEASON_BUDGET;
+  // Dynamic Personal Budget + $5.0M Playoff Boost
+  const maxBudget = useMemo(() => {
+    const playoffBoost = activeGw?.is_playoffs ? 5.0 : 0.0;
+    return Number((userBaseBudget + playoffBoost).toFixed(1));
+  }, [userBaseBudget, activeGw]);
 
   const maxPerTeam = activeGw?.is_playoffs
     ? FANTASY_CONFIG.PLAYOFF_WILDCARD_MAX_PER_TEAM
@@ -303,9 +329,8 @@ export default function TransfersPage() {
         type: 'success',
         text: isUnlimitedFreeWindow
           ? 'Pre-Season lineup updated! (0 point penalty)'
-          : `Transfers confirmed! Server recorded ${
-              savedRecord?.transfers_used ?? 0
-            } total transfer(s) used this Gameweek.`,
+          : `Transfers confirmed! Server recorded ${savedRecord?.transfers_used ?? 0
+          } total transfer(s) used this Gameweek.`,
       });
     }
   };
@@ -370,9 +395,8 @@ export default function TransfersPage() {
             {/* Live Countdown Box */}
             <div className="bg-zinc-950/90 border border-zinc-800 px-4 py-3 rounded-xl flex items-center gap-3">
               <Clock
-                className={`w-5 h-5 ${
-                  isLocked ? 'text-rose-400' : 'text-orange-400'
-                }`}
+                className={`w-5 h-5 ${isLocked ? 'text-rose-400' : 'text-orange-400'
+                  }`}
               />
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
@@ -406,11 +430,10 @@ export default function TransfersPage() {
 
       {statusMsg && (
         <div
-          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${
-            statusMsg.type === 'success'
+          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${statusMsg.type === 'success'
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
               : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-          }`}
+            }`}
         >
           {statusMsg.type === 'success' ? (
             <CheckCircle2 className="w-4 h-4" />
@@ -430,9 +453,8 @@ export default function TransfersPage() {
               1. Select a Player to Swap Out
             </h2>
             <span
-              className={`text-xs font-bold ${
-                draftCost > maxBudget ? 'text-rose-400' : 'text-zinc-400'
-              }`}
+              className={`text-xs font-bold ${draftCost > maxBudget ? 'text-rose-400' : 'text-zinc-400'
+                }`}
             >
               Budget: ${draftCost.toFixed(1)}M / ${maxBudget.toFixed(0)}M
             </span>
@@ -458,13 +480,12 @@ export default function TransfersPage() {
                 <div
                   key={slot.key}
                   onClick={() => !isLocked && setActiveSlotToSwap(slot.key)}
-                  className={`rounded-xl border p-4 flex items-center justify-between cursor-pointer transition-all ${
-                    isSelectedForSwap
+                  className={`rounded-xl border p-4 flex items-center justify-between cursor-pointer transition-all ${isSelectedForSwap
                       ? 'border-orange-500 bg-orange-500/10'
                       : isModified
-                      ? 'border-emerald-500/40 bg-emerald-500/5'
-                      : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700'
-                  }`}
+                        ? 'border-emerald-500/40 bg-emerald-500/5'
+                        : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700'
+                    }`}
                 >
                   <div className="flex items-center gap-3">
                     <RoleBadge role={slot.role} size="sm" />
@@ -549,7 +570,7 @@ export default function TransfersPage() {
                   key={candidate.id}
                   className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-3.5 flex items-center justify-between hover:border-zinc-700"
                 >
-                  <div>
+                  <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
                         {candidate.teams?.code}
@@ -558,9 +579,15 @@ export default function TransfersPage() {
                         {candidate.name}
                       </p>
                     </div>
-                    <p className="text-[11px] text-zinc-400 mt-0.5">
-                      {candidate.teams?.name} • Max {maxPerTeam}/team
-                    </p>
+                    <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                      <span>{candidate.teams?.name} • Max {maxPerTeam}/team</span>
+                      <TeamFixturesTooltip
+                        teamId={candidate.team_id}
+                        teamCode={candidate.teams?.code}
+                        fixtures={fixtures}
+                        activeGw={activeGw}
+                      />
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-3">
