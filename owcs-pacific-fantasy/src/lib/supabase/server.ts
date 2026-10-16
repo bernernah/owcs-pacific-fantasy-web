@@ -56,5 +56,6 @@ export async function getCurrentUserProfile(): Promise<Profile | null> {
     avatar_url: user.user_metadata?.avatar_url ?? null,
     is_admin: true,
     created_at: user.created_at,
+    personal_budget: 100.0,
   };
 }
