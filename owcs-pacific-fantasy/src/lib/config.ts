@@ -7,7 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 export const SCORING_MULTIPLIERS = {
   /** Points awarded per Elimination / Kill */
-  POINTS_PER_KILL: 1.0,
+  POINTS_PER_KILL: 0.25,
 
   /** Points deducted per Death (use a negative number, e.g. -1.0) */
   POINTS_PER_DEATH: -1.0,
@@ -16,7 +16,7 @@ export const SCORING_MULTIPLIERS = {
   POINTS_PER_1K_DAMAGE: 1.0,
 
   /** Points awarded per 1,000 Healing done */
-  POINTS_PER_1K_HEALING: 1.2,
+  POINTS_PER_1K_HEALING: 1.0,
 
   /** Flat bonus points awarded if the player's team won the map */
   POINTS_PER_MAP_WIN: 3.0,
@@ -31,7 +31,7 @@ export const FANTASY_CONFIG = {
 
   SEASON_START_GW1_LOCK: '2026-10-26T18:00:00+08:00',
 
-  TRANSFER_HIT_PENALTY_PTS: 4,
+  TRANSFER_HIT_PENALTY_PTS: 15,
 
   REGULAR_SEASON_FREE_TRANSFERS: 1,
   PLAYOFF_WILDCARD_FREE_TRANSFERS: 3,
