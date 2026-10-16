@@ -1,10 +1,6 @@
 'use client';
 
-import SpreadsheetStatGrid, {
-  type PlayerGridStat,
-} from '@/components/SpreadsheetStatGrid';
-
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   ShieldAlert,
   UploadCloud,
@@ -12,16 +8,20 @@ import {
   CheckCircle2,
   AlertTriangle,
   Trash2,
-  Plus,
   Calendar,
   Users,
   Save,
-  Trophy,
+  History,
+  Edit3,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import RoleBadge from '@/components/RoleBadge';
+import SpreadsheetStatGrid, {
+  type PlayerGridStat,
+} from '@/components/SpreadsheetStatGrid';
 import type {
-  Profile,
   Gameweek,
   Player,
   Team,
@@ -30,31 +30,61 @@ import type {
   GameweekStatus,
 } from '@/types/fantasy';
 
-interface EditableStatRow extends ExtractedScoreboardRow {
-  tempId: string;
-  matched_player_id: string;
+interface MatchLogRow {
+  id: string;
+  gameweek_id: string;
+  match_name: string;
+  player_id: string;
+  kills: number;
+  deaths: number;
+  damage: number;
+  healing: number;
+  map_won: boolean;
+  calculated_points: number;
+  created_at: string;
+  players?: Player;
+  gameweeks?: Gameweek;
+}
+
+interface GroupedMatchHistory {
+  key: string;
+  gameweek_id: string;
+  gw_number: number;
+  gw_name: string;
+  match_name: string;
+  created_at: string;
+  logs: MatchLogRow[];
 }
 
 export default function AdminDashboardPage() {
   const supabase = getSupabaseBrowserClient();
 
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [authChecking, setAuthChecking] = useState<boolean>(true);
-
   const [gameweeks, setGameweeks] = useState<Gameweek[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
+  const [matchLogs, setMatchLogs] = useState<MatchLogRow[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
 
-  // Scoreboard Ingestion State
+  // Shared Target Gameweek & Match Identifier for AI + Spreadsheet Grid
   const [selectedGwId, setSelectedGwId] = useState<string>('');
   const [matchName, setMatchName] = useState<string>('');
+
+  // Phase 3: Hybrid AI Pre-Fill State
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
-
   const [parsingImage, setParsingImage] = useState<boolean>(false);
-  const [committingScores, setCommittingScores] = useState<boolean>(false);
-  const [extractedRows, setExtractedRows] = useState<EditableStatRow[]>([]);
+  const [externalPrefill, setExternalPrefill] = useState<Record<
+    string,
+    Partial<PlayerGridStat>
+  > | null>(null);
+  const [unmappedOcrRows, setUnmappedOcrRows] = useState<
+    ExtractedScoreboardRow[]
+  >([]);
+
+  // Phase 4: Match History State
+  const [expandedMatchKey, setExpandedMatchKey] = useState<string | null>(null);
+  const [deletingMatchKey, setDeletingMatchKey] = useState<string | null>(null);
 
   // Quick Add Player State
   const [newPlayerName, setNewPlayerName] = useState<string>('');
@@ -68,38 +98,33 @@ export default function AdminDashboardPage() {
   } | null>(null);
 
   const loadAdminData = useCallback(async () => {
-    setAuthChecking(true);
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    setLoading(true);
 
-    if (user) {
-      const { data: prof } = await supabase
-        .from('profiles')
+    const [
+      { data: gwData },
+      { data: playerData },
+      { data: teamData },
+      { data: logsData },
+    ] = await Promise.all([
+      supabase
+        .from('gameweeks')
         .select('*')
-        .eq('id', user.id)
-        .single();
-      setProfile((prof as Profile) ?? null);
-    }
-
-    const [{ data: gwData }, { data: playerData }, { data: teamData }] =
-      await Promise.all([
-        supabase
-          .from('gameweeks')
-          .select('*')
-          .order('number', { ascending: true }),
-        supabase
-          .from('players')
-          .select('*, teams(*)')
-          .order('name', { ascending: true }),
-        supabase.from('teams').select('*').order('name', { ascending: true }),
-      ]);
+        .order('number', { ascending: true }),
+      supabase
+        .from('players')
+        .select('*, teams(*)')
+        .order('name', { ascending: true }),
+      supabase.from('teams').select('*').order('name', { ascending: true }),
+      supabase
+        .from('match_logs')
+        .select('*, players(*, teams(*)), gameweeks(*)')
+        .order('created_at', { ascending: false }),
+    ]);
 
     const gws = (gwData as Gameweek[]) ?? [];
     setGameweeks(gws);
     if (gws.length > 0 && !selectedGwId) {
-      const active =
-        gws.find((g) => g.status === 'ACTIVE') ?? gws[0];
+      const active = gws.find((g) => g.status === 'ACTIVE') ?? gws[0];
       setSelectedGwId(active.id);
     }
 
@@ -112,39 +137,46 @@ export default function AdminDashboardPage() {
       setNewPlayerTeamId(allTeams[0].id);
     }
 
-    setAuthChecking(false);
+    setMatchLogs((logsData as MatchLogRow[]) ?? []);
+    setLoading(false);
   }, [supabase, selectedGwId, newPlayerTeamId]);
 
   useEffect(() => {
     loadAdminData();
   }, [loadAdminData]);
 
-  const isAdmin = true && (profile ? true : true);
+  // Smart Fuzzy Player Matcher (handles case, clan tags, and 1/i, 2/z, 0/o OCR swaps)
+  const findBestPlayerMatch = useCallback(
+    (rawName: string): Player | null => {
+      const normalize = (s: string) =>
+        s
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '')
+          .replace(/1/g, 'i')
+          .replace(/2/g, 'z')
+          .replace(/0/g, 'o');
 
-  // Helper: Fuzzy match extracted player_name to database player_id
-  const findBestPlayerMatch = (rawName: string): string => {
-    const clean = rawName.trim().toLowerCase();
-    const exact = players.find((p) => p.name.toLowerCase() === clean);
-    if (exact) return exact.id;
+      const cleanRaw = rawName.trim().toLowerCase();
+      const normRaw = normalize(rawName);
 
-    const partial = players.find(
-      (p) =>
-        clean.includes(p.name.toLowerCase()) ||
-        p.name.toLowerCase().includes(clean)
-    );
-    return partial ? partial.id : '';
-  };
+      // 1. Exact case-insensitive match
+      const exact = players.find((p) => p.name.toLowerCase() === cleanRaw);
+      if (exact) return exact;
 
-  // Live Fantasy Points Preview Formula (mirrors PostgreSQL calculate_match_stat_points)
-  const previewPoints = (row: EditableStatRow): number => {
-    const pts =
-      Number(row.elims) * 1.0 -
-      Number(row.deaths) * 1.0 +
-      (Number(row.damage) / 1000.0) * 1.0 +
-      (Number(row.healing) / 1000.0) * 1.2 +
-      (row.map_won ? 3.0 : 0.0);
-    return Number(pts.toFixed(2));
-  };
+      // 2. Normalized leet-speak match (e.g. "Spinel" -> "Sp1nel", "mushzoom" -> "mush2oom")
+      const normMatch = players.find((p) => normalize(p.name) === normRaw);
+      if (normMatch) return normMatch;
+
+      // 3. Substring match
+      const partial = players.find(
+        (p) =>
+          normRaw.includes(normalize(p.name)) ||
+          normalize(p.name).includes(normRaw)
+      );
+      return partial ?? null;
+    },
+    [players]
+  );
 
   const handleFileSelect = (file: File) => {
     setImageFile(file);
@@ -152,7 +184,10 @@ export default function AdminDashboardPage() {
     setBanner(null);
   };
 
-  const handleExtractScoreboard = async () => {
+  // ==========================================================================
+  // PHASE 3: HYBRID GEMINI AI -> PRE-FILL SPREADSHEET STAT GRID
+  // ==========================================================================
+  const handleExtractScoreboardToGrid = async () => {
     if (!imageFile) {
       setBanner({
         type: 'error',
@@ -179,16 +214,47 @@ export default function AdminDashboardPage() {
       }
 
       const rawList = (data.players as ExtractedScoreboardRow[]) ?? [];
-      const mapped: EditableStatRow[] = rawList.map((item, idx) => ({
-        ...item,
-        tempId: `ocr-${Date.now()}-${idx}`,
-        matched_player_id: findBestPlayerMatch(item.player_name),
-      }));
+      const nextPrefill: Record<string, Partial<PlayerGridStat>> = {};
+      const unmapped: ExtractedScoreboardRow[] = [];
+      const detectedTeamCodes = new Set<string>();
 
-      setExtractedRows(mapped);
+      for (const row of rawList) {
+        const matchedPlayer = findBestPlayerMatch(row.player_name);
+        if (matchedPlayer) {
+          nextPrefill[matchedPlayer.id] = {
+            player_id: matchedPlayer.id,
+            included: true,
+            kills: Number(row.elims) || 0,
+            deaths: Number(row.deaths) || 0,
+            damage: Number(row.damage) || 0,
+            healing: Number(row.healing) || 0,
+            map_won: Boolean(row.map_won),
+          };
+          if (matchedPlayer.teams?.code) {
+            detectedTeamCodes.add(matchedPlayer.teams.code);
+          }
+        } else {
+          unmapped.push(row);
+        }
+      }
+
+      // Auto-suggest Match Name if blank and 2 teams were detected
+      const codes = Array.from(detectedTeamCodes);
+      if (!matchName.trim() && codes.length >= 2) {
+        setMatchName(`${codes[0]} vs ${codes[1]}`);
+      }
+
+      setExternalPrefill(nextPrefill);
+      setUnmappedOcrRows(unmapped);
+
+      const matchedCount = Object.keys(nextPrefill).length;
       setBanner({
         type: 'success',
-        text: `Gemini extracted ${mapped.length} player stat lines! Verify mappings below before committing.`,
+        text: `Gemini pre-filled ${matchedCount} players into the Spreadsheet Grid below! ${
+          unmapped.length > 0
+            ? `(${unmapped.length} unrecognized name(s) can be linked right below.)`
+            : 'Verify the numbers and click Commit Match Stats.'
+        }`,
       });
     } catch (err: unknown) {
       setBanner({
@@ -200,98 +266,109 @@ export default function AdminDashboardPage() {
     }
   };
 
-  const handleUpdateRow = <K extends keyof EditableStatRow>(
-    tempId: string,
-    field: K,
-    value: EditableStatRow[K]
+  // Manually assign an unrecognized OCR row into the Spreadsheet Grid
+  const handleAssignUnmappedRow = (
+    ocrRow: ExtractedScoreboardRow,
+    targetPlayerId: string
   ) => {
-    setExtractedRows((prev) =>
-      prev.map((r) => (r.tempId === tempId ? { ...r, [field]: value } : r))
-    );
-  };
+    if (!targetPlayerId) return;
 
-  const handleSetTeamWinner = (winnerGroup: 'TOP5' | 'BOTTOM5') => {
-    setExtractedRows((prev) =>
-      prev.map((row, idx) => ({
-        ...row,
-        map_won: winnerGroup === 'TOP5' ? idx < 5 : idx >= 5,
-      }))
-    );
-  };
-
-  const handleAddBlankRow = () => {
-    setExtractedRows((prev) => [
-      ...prev,
-      {
-        tempId: `manual-${Date.now()}`,
-        player_name: 'Manual Entry',
-        role: 'DPS',
-        elims: 0,
-        deaths: 0,
-        damage: 0,
-        healing: 0,
-        map_won: false,
-        matched_player_id: players[0]?.id ?? '',
+    setExternalPrefill((prev) => ({
+      ...(prev ?? {}),
+      [targetPlayerId]: {
+        player_id: targetPlayerId,
+        included: true,
+        kills: Number(ocrRow.elims) || 0,
+        deaths: Number(ocrRow.deaths) || 0,
+        damage: Number(ocrRow.damage) || 0,
+        healing: Number(ocrRow.healing) || 0,
+        map_won: Boolean(ocrRow.map_won),
       },
-    ]);
-  };
-
-  const handleConfirmAndCalculate = async () => {
-    setBanner(null);
-
-    if (!selectedGwId) {
-      setBanner({ type: 'error', text: 'Select a target Gameweek first.' });
-      return;
-    }
-    if (!matchName.trim()) {
-      setBanner({
-        type: 'error',
-        text: 'Enter a Match / Map name (e.g., "DAF vs FH - Map 1 Lijiang").',
-      });
-      return;
-    }
-    if (extractedRows.length === 0) {
-      setBanner({ type: 'error', text: 'No stat rows to commit.' });
-      return;
-    }
-
-    const unmapped = extractedRows.filter((r) => !r.matched_player_id);
-    if (unmapped.length > 0) {
-      setBanner({
-        type: 'error',
-        text: `Please link all rows to a Database Player (${unmapped.length} unmapped).`,
-      });
-      return;
-    }
-
-    setCommittingScores(true);
-
-    const insertPayload = extractedRows.map((row) => ({
-      gameweek_id: selectedGwId,
-      player_id: row.matched_player_id,
-      match_name: matchName.trim(),
-      elims: Number(row.elims),
-      deaths: Number(row.deaths),
-      damage: Number(row.damage),
-      healing: Number(row.healing),
-      map_won: Boolean(row.map_won),
     }));
 
-    const { error } = await supabase.from('match_stats').insert(insertPayload);
+    setUnmappedOcrRows((prev) =>
+      prev.filter((r) => r.player_name !== ocrRow.player_name)
+    );
+  };
 
-    setCommittingScores(false);
+  // ==========================================================================
+  // PHASE 4: MATCH HISTORY GROUPING, EDITING & SAFE DELETION
+  // ==========================================================================
+  const groupedMatches = useMemo<GroupedMatchHistory[]>(() => {
+    const map: Record<string, GroupedMatchHistory> = {};
+
+    for (const log of matchLogs) {
+      const key = `${log.gameweek_id}::${log.match_name}`;
+      if (!map[key]) {
+        map[key] = {
+          key,
+          gameweek_id: log.gameweek_id,
+          gw_number: log.gameweeks?.number ?? 1,
+          gw_name: log.gameweeks?.name ?? 'Gameweek',
+          match_name: log.match_name,
+          created_at: log.created_at,
+          logs: [],
+        };
+      }
+      map[key].logs.push(log);
+    }
+
+    return Object.values(map).sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+  }, [matchLogs]);
+
+  const handleLoadMatchIntoGrid = (group: GroupedMatchHistory) => {
+    setSelectedGwId(group.gameweek_id);
+    setMatchName(group.match_name);
+
+    const prefill: Record<string, Partial<PlayerGridStat>> = {};
+    for (const log of group.logs) {
+      prefill[log.player_id] = {
+        player_id: log.player_id,
+        included: true,
+        kills: Number(log.kills),
+        deaths: Number(log.deaths),
+        damage: Number(log.damage),
+        healing: Number(log.healing),
+        map_won: Boolean(log.map_won),
+      };
+    }
+
+    setExternalPrefill(prefill);
+    setBanner({
+      type: 'success',
+      text: `Loaded "${group.match_name}" (${group.logs.length} players) into the Spreadsheet Grid for editing.`,
+    });
+    window.scrollTo({ top: 320, behavior: 'smooth' });
+  };
+
+  const handleDeleteMatch = async (group: GroupedMatchHistory) => {
+    const confirmed = window.confirm(
+      `Delete match "${group.match_name}" (GW${group.gw_number})? This will remove its ${group.logs.length} player stat records from match_logs and automatically recalculate all manager fantasy scores.`
+    );
+    if (!confirmed) return;
+
+    setDeletingMatchKey(group.key);
+    setBanner(null);
+
+    const { error } = await supabase
+      .from('match_logs')
+      .delete()
+      .eq('gameweek_id', group.gameweek_id)
+      .eq('match_name', group.match_name);
+
+    setDeletingMatchKey(null);
 
     if (error) {
       setBanner({ type: 'error', text: error.message });
     } else {
-      setExtractedRows([]);
-      setMatchName('');
-      setImageFile(null);
-      setImagePreviewUrl(null);
       setBanner({
         type: 'success',
-        text: `Committed ${insertPayload.length} player records for "${matchName.trim()}" and recalculated all user fantasy rosters!`,
+        text: `Deleted "${group.match_name}" from match_logs and recalculated all affected manager totals!`,
       });
+      loadAdminData();
     }
   };
 
@@ -317,20 +394,6 @@ export default function AdminDashboardPage() {
     }
   };
 
-  // Team Elimination Toggle (for Playoff Wildcard after GW5)
-  const handleToggleTeamElimination = async (team: Team) => {
-    const { error } = await supabase
-      .from('teams')
-      .update({ is_eliminated: !team.is_eliminated })
-      .eq('id', team.id);
-
-    if (error) {
-      setBanner({ type: 'error', text: error.message });
-    } else {
-      loadAdminData();
-    }
-  };
-
   // Quick Add Pro Player
   const handleQuickAddPlayer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -349,7 +412,7 @@ export default function AdminDashboardPage() {
     if (!targetTeamId) {
       setBanner({
         type: 'error',
-        text: 'Create at least one OWCS Team in Section 3 before adding players.',
+        text: 'Create at least one OWCS Team in Section 4 before adding players.',
       });
       return;
     }
@@ -374,50 +437,19 @@ export default function AdminDashboardPage() {
     }
   };
 
-  if (authChecking) {
+  if (loading && players.length === 0) {
     return (
       <div className="py-20 text-center text-sm text-zinc-400">
-        Verifying Commissioner credentials...
-      </div>
-    );
-  }
-
-  if (!isAdmin) {
-    return (
-      <div className="max-w-lg mx-auto my-16 rounded-2xl border border-rose-500/40 bg-[#0d1018] p-8 text-center space-y-4">
-        <ShieldAlert className="w-12 h-12 text-rose-500 mx-auto" />
-        <h1 className="text-xl font-black text-white">
-          RESTRICTED COMMISSIONER AREA
-        </h1>
-        <p className="text-xs text-zinc-400 leading-relaxed">
-          This route is restricted strictly to the League Commissioner&apos;s
-          Discord User ID. Make sure you are signed in with Discord and your ID
-          is set in <code className="text-orange-400">.env.local</code> or the{' '}
-          <code className="text-orange-400">admin_whitelist</code> table.
-        </p>
+        Loading Commissioner Admin Hub...
       </div>
     );
   }
 
   return (
     <div className="space-y-10">
-      
-      {/* Spreadsheet Stat Grid */}
-      <SpreadsheetStatGrid
-        gameweeks={gameweeks}
-        teams={teams}
-        players={players}
-        selectedGwId={selectedGwId}
-        onSelectGwId={setSelectedGwId}
-        matchName={matchName}
-        onChangeMatchName={setMatchName}
-        onStatsCommitted={loadAdminData}
-        onBanner={setBanner}
-      />
-
       {/* Header */}
       <div className="rounded-2xl border border-orange-500/30 bg-gradient-to-r from-zinc-900 via-[#111522] to-zinc-950 p-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3.5">
           <div className="p-3 rounded-xl bg-orange-500/15 text-orange-400 border border-orange-500/30">
             <ShieldAlert className="w-6 h-6" />
           </div>
@@ -426,7 +458,8 @@ export default function AdminDashboardPage() {
               OWCS COMMISSIONER ADMIN HUB
             </h1>
             <p className="text-xs text-zinc-400">
-              Gemini Flash Scoreboard OCR Ingestion, Automated Point Recalculation & Schedule Controls
+              Hybrid AI Scoreboard Pre-Fill, Arrow-Key Spreadsheet Ledger &
+              Match History Controls
             </p>
           </div>
         </div>
@@ -449,327 +482,320 @@ export default function AdminDashboardPage() {
         </div>
       )}
 
-      {/* SECTION 1: GEMINI SCOREBOARD OCR INGESTION */}
-      <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-6 shadow-xl">
+      {/* ====================================================================
+          PHASE 3: HYBRID GEMINI AI SCREENSHOT PRE-FILLER
+      ==================================================================== */}
+      <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-5 shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-zinc-800 pb-4">
           <div className="flex items-center gap-2.5">
             <Sparkles className="w-5 h-5 text-orange-400" />
-            <h2 className="text-lg font-black text-white">
-              1. Post-Match Scoreboard AI Ingestion
-            </h2>
-          </div>
-          <span className="text-xs text-zinc-400">
-            Powered by Google Gemini Flash Structured Vision
-          </span>
-        </div>
-
-        {/* Target Gameweek & Match Name Inputs */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-2">
-              Target Gameweek
-            </label>
-            <select
-              value={selectedGwId}
-              onChange={(e) => setSelectedGwId(e.target.value)}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm font-bold text-white"
-            >
-              {gameweeks.map((gw) => (
-                <option key={gw.id} value={gw.id}>
-                  GW{gw.number}: {gw.name} ({gw.status})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-2">
-              Match & Map Identifier
-            </label>
-            <input
-              type="text"
-              placeholder="e.g., DAF vs FH - Map 2 (King's Row)"
-              value={matchName}
-              onChange={(e) => setMatchName(e.target.value)}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-orange-500"
-            />
-          </div>
-        </div>
-
-        {/* Drag-and-Drop Zone */}
-        <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setIsDragging(false);
-            const droppedFile = e.dataTransfer.files?.[0];
-            if (droppedFile) handleFileSelect(droppedFile);
-          }}
-          className={`relative rounded-2xl border-2 border-dashed p-8 text-center transition-all ${
-            isDragging
-              ? 'border-orange-500 bg-orange-500/10'
-              : 'border-zinc-800 bg-zinc-900/40 hover:border-zinc-700'
-          }`}
-        >
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleFileSelect(f);
-            }}
-            className="absolute inset-0 opacity-0 cursor-pointer"
-          />
-
-          {imagePreviewUrl ? (
-            <div className="space-y-4">
-              <img
-                src={imagePreviewUrl}
-                alt="Scoreboard Preview"
-                className="max-h-64 mx-auto rounded-xl border border-zinc-700 object-contain"
-              />
+            <div>
+              <h2 className="text-lg font-black text-white">
+                1. Hybrid AI Scoreboard Pre-Filler (Optional)
+              </h2>
               <p className="text-xs text-zinc-400">
-                {imageFile?.name} — Click or drag another image to replace
+                Drop a screenshot here to automatically extract stats and
+                pre-fill the Spreadsheet Grid below for verification.
               </p>
             </div>
-          ) : (
-            <div className="space-y-2">
-              <UploadCloud className="w-10 h-10 text-orange-400 mx-auto" />
-              <p className="text-sm font-bold text-white">
-                Drag and drop an OWCS post-match scoreboard screenshot here
-              </p>
-              <p className="text-xs text-zinc-500">
-                Supports PNG, JPG, or WebP screenshots (1080p / 1440p / 4K)
-              </p>
-            </div>
-          )}
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <button
-            type="button"
-            onClick={handleAddBlankRow}
-            className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-300 hover:text-white bg-zinc-800 px-3.5 py-2 rounded-xl"
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+              const droppedFile = e.dataTransfer.files?.[0];
+              if (droppedFile) handleFileSelect(droppedFile);
+            }}
+            className={`lg:col-span-8 relative rounded-2xl border-2 border-dashed p-6 text-center transition-all ${
+              isDragging
+                ? 'border-orange-500 bg-orange-500/10'
+                : 'border-zinc-800 bg-zinc-900/40 hover:border-zinc-700'
+            }`}
           >
-            <Plus className="w-4 h-4" /> Add Manual Stat Row
-          </button>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleFileSelect(f);
+              }}
+              className="absolute inset-0 opacity-0 cursor-pointer"
+            />
 
-          <button
-            type="button"
-            onClick={handleExtractScoreboard}
-            disabled={!imageFile || parsingImage}
-            className="inline-flex items-center gap-2 bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-5 py-3 rounded-xl shadow-lg shadow-orange-500/20 transition-all"
-          >
-            <Sparkles className="w-4 h-4" />
-            {parsingImage
-              ? 'Analyzing Scoreboard with Gemini...'
-              : 'Extract Stats with Gemini AI'}
-          </button>
-        </div>
-
-        {/* Editable Verification Table */}
-        {extractedRows.length > 0 && (
-          <div className="space-y-4 pt-6 border-t border-zinc-800">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-black text-white">
-                  Verify & Tweak Extracted Telemetry
-                </h3>
-                <p className="text-xs text-zinc-400">
-                  Confirm database player mapping and edit any stat value before
-                  writing to <code className="text-orange-400">match_stats</code>
-                  .
+            {imagePreviewUrl ? (
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+                <img
+                  src={imagePreviewUrl}
+                  alt="Scoreboard Preview"
+                  className="max-h-36 rounded-xl border border-zinc-700 object-contain"
+                />
+                <div className="text-left">
+                  <p className="text-xs font-bold text-white">
+                    {imageFile?.name}
+                  </p>
+                  <p className="text-[11px] text-zinc-400 mt-1">
+                    Click or drag another screenshot to replace
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-1.5 py-2">
+                <UploadCloud className="w-8 h-8 text-orange-400 mx-auto" />
+                <p className="text-xs sm:text-sm font-bold text-white">
+                  Drag & drop an OWCS scoreboard screenshot, or click to browse
+                </p>
+                <p className="text-[11px] text-zinc-500">
+                  Extracts Kills, Deaths, Damage & Healing directly into the
+                  Spreadsheet Grid below
                 </p>
               </div>
+            )}
+          </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleSetTeamWinner('TOP5')}
-                  className="inline-flex items-center gap-1.5 text-xs font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-3 py-1.5 rounded-lg hover:bg-emerald-500/25"
+          <div className="lg:col-span-4 flex flex-col gap-3">
+            <button
+              type="button"
+              onClick={handleExtractScoreboardToGrid}
+              disabled={!imageFile || parsingImage}
+              className="w-full inline-flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-5 py-3.5 rounded-xl shadow-lg shadow-orange-500/20 transition-all"
+            >
+              <Sparkles className="w-4 h-4" />
+              {parsingImage
+                ? 'Extracting into Grid...'
+                : 'Extract & Pre-Fill Spreadsheet'}
+            </button>
+            <p className="text-[11px] text-zinc-500 text-center">
+              Nothing is saved to the database until you review the grid and
+              click <strong className="text-zinc-300">Commit Match Stats</strong>.
+            </p>
+          </div>
+        </div>
+
+        {/* Unmapped OCR Row Resolver (if Gemini reads an unfamiliar nickname) */}
+        {unmappedOcrRows.length > 0 && (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 space-y-3">
+            <p className="text-xs font-bold text-amber-300">
+              Unrecognized Screenshot Names ({unmappedOcrRows.length}) — Select
+              a Database Player to inject their stats into the grid:
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {unmappedOcrRows.map((uRow) => (
+                <div
+                  key={uRow.player_name}
+                  className="flex items-center justify-between gap-2 bg-zinc-950/80 border border-zinc-800 rounded-lg px-3 py-2 text-xs"
                 >
-                  <Trophy className="w-3.5 h-3.5" /> Set Top 5 Won Map
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSetTeamWinner('BOTTOM5')}
-                  className="inline-flex items-center gap-1.5 text-xs font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30 px-3 py-1.5 rounded-lg hover:bg-sky-500/25"
-                >
-                  <Trophy className="w-3.5 h-3.5" /> Set Bottom 5 Won Map
-                </button>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto rounded-xl border border-zinc-800">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-zinc-900/80 border-b border-zinc-800 text-[11px] font-bold uppercase text-zinc-400">
-                    <th className="py-3 px-3">OCR Name</th>
-                    <th className="py-3 px-3">Linked DB Player</th>
-                    <th className="py-3 px-2">Role</th>
-                    <th className="py-3 px-2">Elims</th>
-                    <th className="py-3 px-2">Deaths</th>
-                    <th className="py-3 px-2">Damage</th>
-                    <th className="py-3 px-2">Healing</th>
-                    <th className="py-3 px-2 text-center">Map Won</th>
-                    <th className="py-3 px-3 text-right">Est. Pts</th>
-                    <th className="py-3 px-2"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-zinc-800/60">
-                  {extractedRows.map((row) => (
-                    <tr key={row.tempId} className="bg-zinc-950/40">
-                      <td className="py-2.5 px-3 font-mono text-zinc-300">
-                        {row.player_name}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <select
-                          value={row.matched_player_id}
-                          onChange={(e) =>
-                            handleUpdateRow(
-                              row.tempId,
-                              'matched_player_id',
-                              e.target.value
-                            )
-                          }
-                          className={`w-full rounded-lg px-2.5 py-1.5 font-bold border ${
-                            row.matched_player_id
-                              ? 'bg-zinc-900 border-zinc-700 text-white'
-                              : 'bg-rose-500/15 border-rose-500 text-rose-300'
-                          }`}
-                        >
-                          <option value="">-- Select DB Player --</option>
-                          {players.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              [{p.teams?.code}] {p.name} ({p.role})
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="py-2.5 px-2">
-                        <RoleBadge role={row.role} size="sm" />
-                      </td>
-                      <td className="py-2.5 px-2">
-                        <input
-                          type="number"
-                          value={row.elims}
-                          onChange={(e) =>
-                            handleUpdateRow(
-                              row.tempId,
-                              'elims',
-                              Number(e.target.value)
-                            )
-                          }
-                          className="w-16 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-white font-bold"
-                        />
-                      </td>
-                      <td className="py-2.5 px-2">
-                        <input
-                          type="number"
-                          value={row.deaths}
-                          onChange={(e) =>
-                            handleUpdateRow(
-                              row.tempId,
-                              'deaths',
-                              Number(e.target.value)
-                            )
-                          }
-                          className="w-16 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-white font-bold"
-                        />
-                      </td>
-                      <td className="py-2.5 px-2">
-                        <input
-                          type="number"
-                          value={row.damage}
-                          onChange={(e) =>
-                            handleUpdateRow(
-                              row.tempId,
-                              'damage',
-                              Number(e.target.value)
-                            )
-                          }
-                          className="w-24 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-white font-mono"
-                        />
-                      </td>
-                      <td className="py-2.5 px-2">
-                        <input
-                          type="number"
-                          value={row.healing}
-                          onChange={(e) =>
-                            handleUpdateRow(
-                              row.tempId,
-                              'healing',
-                              Number(e.target.value)
-                            )
-                          }
-                          className="w-24 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-white font-mono"
-                        />
-                      </td>
-                      <td className="py-2.5 px-2 text-center">
-                        <input
-                          type="checkbox"
-                          checked={row.map_won}
-                          onChange={(e) =>
-                            handleUpdateRow(
-                              row.tempId,
-                              'map_won',
-                              e.target.checked
-                            )
-                          }
-                          className="w-4 h-4 accent-orange-500"
-                        />
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-black text-orange-400">
-                        {previewPoints(row).toFixed(1)}
-                      </td>
-                      <td className="py-2.5 px-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExtractedRows((prev) =>
-                              prev.filter((item) => item.tempId !== row.tempId)
-                            )
-                          }
-                          className="p-1 text-zinc-500 hover:text-rose-400"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="flex justify-end pt-2">
-              <button
-                type="button"
-                onClick={handleConfirmAndCalculate}
-                disabled={committingScores}
-                className="inline-flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-zinc-950 font-black text-sm uppercase tracking-wider px-6 py-3 rounded-xl shadow-lg shadow-emerald-500/20 transition-all"
-              >
-                <CheckCircle2 className="w-5 h-5" />
-                {committingScores
-                  ? 'Writing Stats & Recalculating Rosters...'
-                  : 'Confirm & Calculate Scores'}
-              </button>
+                  <div>
+                    <span className="font-mono font-bold text-white">
+                      &ldquo;{uRow.player_name}&rdquo;
+                    </span>
+                    <span className="text-zinc-400 ml-2">
+                      ({uRow.elims}K / {uRow.deaths}D / {uRow.damage} DMG /{' '}
+                      {uRow.healing} H)
+                    </span>
+                  </div>
+                  <select
+                    defaultValue=""
+                    onChange={(e) =>
+                      handleAssignUnmappedRow(uRow, e.target.value)
+                    }
+                    className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-bold text-white"
+                  >
+                    <option value="">Map to Player...</option>
+                    {players.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        [{p.teams?.code}] {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
             </div>
           </div>
         )}
       </div>
 
-      {/* SECTION 2: GAMEWEEK LOCK TIMESTAMPS & PLAYOFF ELIMINATION CONTROLS */}
+      {/* ====================================================================
+          PHASE 2 & 3: ARROW-KEY SPREADSHEET STAT GRID
+      ==================================================================== */}
+      <SpreadsheetStatGrid
+        gameweeks={gameweeks}
+        teams={teams}
+        players={players}
+        selectedGwId={selectedGwId}
+        onSelectGwId={setSelectedGwId}
+        matchName={matchName}
+        onChangeMatchName={setMatchName}
+        externalPrefill={externalPrefill}
+        onStatsCommitted={loadAdminData}
+        onBanner={setBanner}
+      />
+
+      {/* ====================================================================
+          PHASE 4: MATCH HISTORY LEDGER & SAFE DELETION
+      ==================================================================== */}
+      <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-5 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-zinc-800 pb-4">
+          <div className="flex items-center gap-2.5">
+            <History className="w-5 h-5 text-orange-400" />
+            <div>
+              <h2 className="text-lg font-black text-white">
+                3. Committed Match History Ledger
+              </h2>
+              <p className="text-xs text-zinc-400">
+                Inspect individual matches in <code className="text-orange-400">match_logs</code>, load them back into the grid to edit, or safely delete a match to recalculate all manager scores.
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-bold text-zinc-400">
+            {groupedMatches.length} Committed Match(es)
+          </span>
+        </div>
+
+        {groupedMatches.length === 0 ? (
+          <div className="py-10 text-center border border-dashed border-zinc-800 rounded-xl text-xs text-zinc-500">
+            No matches committed to <code className="text-zinc-400">match_logs</code> yet. Use the Spreadsheet Grid above to commit your first game!
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {groupedMatches.map((group) => {
+              const isExpanded = expandedMatchKey === group.key;
+              const isDeleting = deletingMatchKey === group.key;
+
+              return (
+                <div
+                  key={group.key}
+                  className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden"
+                >
+                  <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div
+                      onClick={() =>
+                        setExpandedMatchKey(isExpanded ? null : group.key)
+                      }
+                      className="flex items-center gap-3 cursor-pointer"
+                    >
+                      <span className="text-xs font-black px-2.5 py-1 rounded-lg bg-orange-500/15 text-orange-400 border border-orange-500/30">
+                        GW{group.gw_number}
+                      </span>
+                      <div>
+                        <h3 className="text-sm font-black text-white flex items-center gap-2">
+                          {group.match_name}
+                          {isExpanded ? (
+                            <ChevronUp className="w-4 h-4 text-zinc-400" />
+                          ) : (
+                            <ChevronDown className="w-4 h-4 text-zinc-400" />
+                          )}
+                        </h3>
+                        <p className="text-[11px] text-zinc-400">
+                          {group.logs.length} Player Records • Committed{' '}
+                          {new Date(group.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleLoadMatchIntoGrid(group)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors"
+                      >
+                        <Edit3 className="w-3.5 h-3.5 text-orange-400" />
+                        Load into Grid to Edit
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={isDeleting}
+                        onClick={() => handleDeleteMatch(group)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-extrabold bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 transition-colors disabled:opacity-40"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        {isDeleting ? 'Deleting...' : 'Delete Match'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {isExpanded && (
+                    <div className="border-t border-zinc-800 bg-zinc-950/60 px-4 py-3 overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="text-[10px] font-bold uppercase text-zinc-500 border-b border-zinc-800">
+                            <th className="py-2 px-2">Player</th>
+                            <th className="py-2 px-2">Role</th>
+                            <th className="py-2 px-2 text-right">Kills</th>
+                            <th className="py-2 px-2 text-right">Deaths</th>
+                            <th className="py-2 px-2 text-right">Damage</th>
+                            <th className="py-2 px-2 text-right">Healing</th>
+                            <th className="py-2 px-2 text-center">Won</th>
+                            <th className="py-2 px-2 text-right text-orange-400">
+                              Fantasy Pts
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-800/50">
+                          {group.logs.map((log) => (
+                            <tr key={log.id}>
+                              <td className="py-2 px-2 font-bold text-white">
+                                <span className="text-[10px] text-zinc-400 mr-1.5">
+                                  [{log.players?.teams?.code ?? 'OWCS'}]
+                                </span>
+                                {log.players?.name ?? 'Unknown'}
+                              </td>
+                              <td className="py-2 px-2">
+                                {log.players?.role && (
+                                  <RoleBadge
+                                    role={log.players.role}
+                                    size="sm"
+                                  />
+                                )}
+                              </td>
+                              <td className="py-2 px-2 text-right font-mono">
+                                {log.kills}
+                              </td>
+                              <td className="py-2 px-2 text-right font-mono text-rose-400">
+                                {log.deaths}
+                              </td>
+                              <td className="py-2 px-2 text-right font-mono">
+                                {Number(log.damage).toLocaleString()}
+                              </td>
+                              <td className="py-2 px-2 text-right font-mono">
+                                {Number(log.healing).toLocaleString()}
+                              </td>
+                              <td className="py-2 px-2 text-center">
+                                {log.map_won ? '✅' : '—'}
+                              </td>
+                              <td className="py-2 px-2 text-right font-mono font-black text-orange-400">
+                                {Number(log.calculated_points).toFixed(1)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ====================================================================
+          SECTION 4 & 5: SCHEDULE CONTROLS, TEAM MANAGER & QUICK ADD PLAYER
+      ==================================================================== */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Gameweek Lock Schedule Manager */}
         <div className="lg:col-span-7 rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-4">
           <div className="flex items-center gap-2.5 border-b border-zinc-800 pb-3">
             <Calendar className="w-5 h-5 text-orange-400" />
             <h2 className="text-base font-black text-white">
-              2. Gameweek Schedule & Lock Time Controls
+              4. Gameweek Schedule & Lock Time Controls
             </h2>
           </div>
 
@@ -784,7 +810,6 @@ export default function AdminDashboardPage() {
           </div>
         </div>
 
-        {/* Team Manager & Quick Player Adder */}
         <div className="lg:col-span-5 space-y-6">
           <TeamManagerCard
             teams={teams}
@@ -792,18 +817,17 @@ export default function AdminDashboardPage() {
             onBanner={setBanner}
           />
 
-          {/* Quick Add Pro Player */}
           <form
             onSubmit={handleQuickAddPlayer}
             className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-4"
           >
             <h2 className="text-base font-black text-white border-b border-zinc-800 pb-3">
-              4. Quick Add Pro Player
+              6. Quick Add Pro Player
             </h2>
             <div className="grid grid-cols-2 gap-3">
               <input
                 type="text"
-                placeholder="BattleTag (e.g. d4rt)"
+                placeholder="BattleTag (e.g. sgy)"
                 value={newPlayerName}
                 onChange={(e) => setNewPlayerName(e.target.value)}
                 className="bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white"
@@ -857,7 +881,6 @@ function GameweekRowEditor({
   gw: Gameweek;
   onSave: (id: string, lockTimeIso: string, status: GameweekStatus) => void;
 }) {
-  // Format ISO timestamp into local datetime-local input string (YYYY-MM-DDTHH:mm)
   const toLocalInputString = (iso: string) => {
     const d = new Date(iso);
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -893,14 +916,12 @@ function GameweekRowEditor({
           value={status}
           onChange={(e) => setStatus(e.target.value as GameweekStatus)}
           className="bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white"
-        >
-          <option value="UPCOMING">UPCOMING</option>
-          <option value="ACTIVE">ACTIVE</option>
-          <option value="COMPLETED">COMPLETED</option>
-        </select>
+        />
         <button
           type="button"
-          onClick={() => onSave(gw.id, new Date(localTime).toISOString(), status)}
+          onClick={() =>
+            onSave(gw.id, new Date(localTime).toISOString(), status)
+          }
           className="inline-flex items-center gap-1 bg-zinc-800 hover:bg-orange-500 hover:text-zinc-950 text-zinc-200 font-bold text-xs px-3 py-1.5 rounded-lg transition-colors"
         >
           <Save className="w-3.5 h-3.5" /> Save
@@ -921,13 +942,11 @@ function TeamManagerCard({
 }) {
   const supabase = getSupabaseBrowserClient();
 
-  // Create Team Form State
   const [newName, setNewName] = useState<string>('');
   const [newCode, setNewCode] = useState<string>('');
   const [newLogoUrl, setNewLogoUrl] = useState<string>('');
   const [creating, setCreating] = useState<boolean>(false);
 
-  // Inline Edit State
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [editName, setEditName] = useState<string>('');
   const [editCode, setEditCode] = useState<string>('');
@@ -942,14 +961,10 @@ function TeamManagerCard({
     const trimmedCode = newCode.trim().toUpperCase();
     const trimmedLogo = newLogoUrl.trim() || null;
 
-    if (!trimmedName) {
-      onBanner({ type: 'error', text: 'Please enter a Team Name.' });
-      return;
-    }
-    if (trimmedCode.length < 2 || trimmedCode.length > 5) {
+    if (!trimmedName || trimmedCode.length < 2 || trimmedCode.length > 5) {
       onBanner({
         type: 'error',
-        text: 'Team Code must be between 2 and 5 characters (e.g., DAF, FH, 99D).',
+        text: 'Team Name is required and Code must be 2–5 characters.',
       });
       return;
     }
@@ -1061,7 +1076,7 @@ function TeamManagerCard({
         <Users className="w-5 h-5 text-orange-400" />
         <div>
           <h2 className="text-base font-black text-white">
-            3. OWCS Team Manager & Playoff Status
+            5. OWCS Team Manager & Playoff Status
           </h2>
           <p className="text-[11px] text-zinc-400">
             Create teams, edit codes/names, or mark bottom 2 teams as Eliminated
@@ -1070,7 +1085,6 @@ function TeamManagerCard({
         </div>
       </div>
 
-      {/* Create New Team Form */}
       <form
         onSubmit={handleCreateTeam}
         className="rounded-xl border border-zinc-800/90 bg-zinc-900/50 p-3.5 space-y-3"
@@ -1081,7 +1095,7 @@ function TeamManagerCard({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
           <input
             type="text"
-            placeholder="Team Name (e.g. DAF Esports)"
+            placeholder="Team Name"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             className="sm:col-span-2 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-500"
@@ -1089,7 +1103,7 @@ function TeamManagerCard({
           <input
             type="text"
             maxLength={5}
-            placeholder="Code (2-5 chars)"
+            placeholder="Code"
             value={newCode}
             onChange={(e) => setNewCode(e.target.value.toUpperCase())}
             className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-bold uppercase text-white focus:outline-none focus:border-orange-500"
@@ -1098,7 +1112,7 @@ function TeamManagerCard({
         <div className="flex items-center gap-2.5">
           <input
             type="text"
-            placeholder="Logo URL (optional, e.g. /logos/daf.png)"
+            placeholder="Logo URL (optional)"
             value={newLogoUrl}
             onChange={(e) => setNewLogoUrl(e.target.value)}
             className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-orange-500"
@@ -1113,114 +1127,105 @@ function TeamManagerCard({
         </div>
       </form>
 
-      {/* Existing Teams List */}
       <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-        {teams.length === 0 ? (
-          <p className="text-xs text-zinc-500 text-center py-4">
-            No teams created yet. Add your first OWCS Pacific team above!
-          </p>
-        ) : (
-          teams.map((t) => {
-            const isEditing = editingTeamId === t.id;
+        {teams.map((t) => {
+          const isEditing = editingTeamId === t.id;
 
-            return (
-              <div
-                key={t.id}
-                className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 space-y-2.5"
-              >
-                {isEditing ? (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-3 gap-2">
-                      <input
-                        type="text"
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        placeholder="Team Name"
-                        className="col-span-2 bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
-                      />
-                      <input
-                        type="text"
-                        maxLength={5}
-                        value={editCode}
-                        onChange={(e) =>
-                          setEditCode(e.target.value.toUpperCase())
-                        }
-                        placeholder="Code"
-                        className="bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs font-bold uppercase text-white"
-                      />
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <input
-                        type="text"
-                        value={editLogoUrl}
-                        onChange={(e) => setEditLogoUrl(e.target.value)}
-                        placeholder="Logo URL (optional)"
-                        className="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleSaveEdit(t.id)}
-                        disabled={savingEdit}
-                        className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-xs px-3 py-1.5 rounded-lg"
-                      >
-                        {savingEdit ? 'Saving...' : 'Save'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingTeamId(null)}
-                        className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-xs px-2.5 py-1.5 rounded-lg"
-                      >
-                        Cancel
-                      </button>
-                    </div>
+          return (
+            <div
+              key={t.id}
+              className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 space-y-2.5"
+            >
+              {isEditing ? (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-3 gap-2">
+                    <input
+                      type="text"
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="col-span-2 bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                    />
+                    <input
+                      type="text"
+                      maxLength={5}
+                      value={editCode}
+                      onChange={(e) =>
+                        setEditCode(e.target.value.toUpperCase())
+                      }
+                      className="bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs font-bold uppercase text-white"
+                    />
                   </div>
-                ) : (
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-[10px] font-black px-2 py-0.5 rounded bg-zinc-800 text-orange-400 border border-zinc-700 shrink-0">
-                        {t.code}
-                      </span>
-                      <span className="text-xs font-bold text-white truncate">
-                        {t.name}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => handleToggleEliminated(t)}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-colors ${
-                          t.is_eliminated
-                            ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                            : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                        }`}
-                      >
-                        {t.is_eliminated ? 'Eliminated' : 'Active'}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => startEditing(t)}
-                        className="px-2 py-1 rounded-lg text-[11px] font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
-                      >
-                        Edit
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteTeam(t)}
-                        title="Delete Team"
-                        className="p-1 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                    <input
+                      type="text"
+                      value={editLogoUrl}
+                      onChange={(e) => setEditLogoUrl(e.target.value)}
+                      placeholder="Logo URL"
+                      className="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleSaveEdit(t.id)}
+                      disabled={savingEdit}
+                      className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-xs px-3 py-1.5 rounded-lg"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingTeamId(null)}
+                      className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-xs px-2.5 py-1.5 rounded-lg"
+                    >
+                      Cancel
+                    </button>
                   </div>
-                )}
-              </div>
-            );
-          })
-        )}
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded bg-zinc-800 text-orange-400 border border-zinc-700 shrink-0">
+                      {t.code}
+                    </span>
+                    <span className="text-xs font-bold text-white truncate">
+                      {t.name}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleEliminated(t)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-colors ${
+                        t.is_eliminated
+                          ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                          : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                      }`}
+                    >
+                      {t.is_eliminated ? 'Eliminated' : 'Active'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => startEditing(t)}
+                      className="px-2 py-1 rounded-lg text-[11px] font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                    >
+                      Edit
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteTeam(t)}
+                      title="Delete Team"
+                      className="p-1 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

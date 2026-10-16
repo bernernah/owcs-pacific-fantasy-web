@@ -80,23 +80,26 @@ export default function SpreadsheetStatGrid({
     });
   }, [players]);
 
-  // Apply external prefill (Prepared for Phase 3 Gemini AI integration)
+  // Apply external prefill from Gemini AI or Match History Edit
   useEffect(() => {
     if (!externalPrefill) return;
-    setGridMap((prev) => {
-      const next = { ...prev };
-      for (const [playerId, incoming] of Object.entries(externalPrefill)) {
-        if (next[playerId]) {
-          next[playerId] = {
-            ...next[playerId],
-            ...incoming,
-            included: true,
-          };
-        }
+    setGridMap(() => {
+      const next: Record<string, PlayerGridStat> = {};
+      for (const p of players) {
+        const incoming = externalPrefill[p.id];
+        next[p.id] = {
+          player_id: p.id,
+          included: Boolean(incoming),
+          kills: incoming?.kills ?? 0,
+          deaths: incoming?.deaths ?? 0,
+          damage: incoming?.damage ?? 0,
+          healing: incoming?.healing ?? 0,
+          map_won: incoming?.map_won ?? false,
+        };
       }
       return next;
     });
-  }, [externalPrefill]);
+  }, [externalPrefill, players]);
 
   // Auto-generate Match Name when both Team A and Team B are selected
   const handleTeamFilterChange = (slot: 'A' | 'B', teamId: string) => {

@@ -46,7 +46,7 @@ export default function StatsDatabasePage() {
         await Promise.all([
           supabase.from('player_season_stats_view').select('*'),
           supabase
-            .from('match_stats')
+            .from('match_logs')
             .select('*, players(*, teams(*)), gameweeks(*)')
             .order('created_at', { ascending: false }),
           supabase
@@ -97,7 +97,7 @@ export default function StatsDatabasePage() {
         });
     }
 
-    // Aggregate from granular match_stats for the selected Gameweek and/or Match
+    // Aggregate from granular match_logs for the selected Gameweek and/or Match
     const grouped: Record<string, PlayerSeasonStat> = {};
 
     for (const ms of matchStats) {
@@ -135,7 +135,7 @@ export default function StatsDatabasePage() {
 
       const entry = grouped[p.id];
       entry.maps_played += 1;
-      entry.total_elims += Number(ms.elims);
+      entry.total_elims += Number(ms.kills);
       entry.total_deaths += Number(ms.deaths);
       entry.total_damage += Number(ms.damage);
       entry.total_healing += Number(ms.healing);

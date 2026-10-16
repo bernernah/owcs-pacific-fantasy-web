@@ -61,7 +61,7 @@ export interface MatchStat {
   gameweek_id: string;
   player_id: string;
   match_name: string;
-  elims: number;
+  kills: number;
   deaths: number;
   damage: number;
   healing: number;

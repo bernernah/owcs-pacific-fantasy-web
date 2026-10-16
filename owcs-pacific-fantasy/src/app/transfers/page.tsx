@@ -7,21 +7,12 @@ import {
   AlertTriangle,
   CheckCircle2,
   RefreshCw,
+  Sparkles,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { FANTASY_CONFIG, isPreSeasonNow } from '@/lib/config';
 import RoleBadge from '@/components/RoleBadge';
 import type { Player, Gameweek, UserRoster } from '@/types/fantasy';
-
-// ============================================================================
-// COMMISSIONER CONFIG: NEXT TRANSFER LOCK DEADLINE
-// Change this ISO date string anytime (or set NEXT_PUBLIC_TRANSFER_DEADLINE)
-// Format: YYYY-MM-DDTHH:mm:ss+08:00 (AWST / SGT) or Z (UTC)
-// ============================================================================
-export const TRANSFER_LOCK_DEADLINE =
-  process.env.NEXT_PUBLIC_TRANSFER_DEADLINE || '2026-10-26T18:00:00+08:00';
-
-// Extra transfer penalty points (matches SQL trigger setting)
-const EXTRA_TRANSFER_PENALTY_PTS = 10;
 
 type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
 
@@ -56,6 +47,9 @@ export default function TransfersPage() {
   );
   const [countdownText, setCountdownText] = useState<string>('Loading...');
   const [isLocked, setIsLocked] = useState<boolean>(false);
+  const [isPreSeason, setIsPreSeason] = useState<boolean>(() =>
+    isPreSeasonNow()
+  );
 
   const [showPenaltyModal, setShowPenaltyModal] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
@@ -64,11 +58,15 @@ export default function TransfersPage() {
     text: string;
   } | null>(null);
 
-  // Live 1-second Countdown Timer driven by TRANSFER_LOCK_DEADLINE
+  // Live 1-second Countdown Timer driven by FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE
   useEffect(() => {
-    const targetMs = new Date(TRANSFER_LOCK_DEADLINE).getTime();
+    const targetMs = new Date(
+      FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE
+    ).getTime();
 
     const updateTimer = () => {
+      setIsPreSeason(isPreSeasonNow());
+
       if (Number.isNaN(targetMs)) {
         setCountdownText('INVALID DATE CONFIG');
         return;
@@ -130,7 +128,7 @@ export default function TransfersPage() {
           .insert({
             number: 1,
             name: 'Gameweek 1 - Day 1',
-            lock_time: TRANSFER_LOCK_DEADLINE,
+            lock_time: FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE,
             is_playoffs: false,
             status: 'ACTIVE',
           })
@@ -182,11 +180,18 @@ export default function TransfersPage() {
     loadTransferState();
   }, [supabase]);
 
-  // Free Transfer Allowance: 1 Free in Regular Season, 3 Free in Playoffs
+  // Pre-Season = Unlimited Free Transfers (Before GW1 Lock or during GW1 setup)
+  const isUnlimitedFreeWindow = useMemo(() => {
+    return isPreSeason || activeGw?.number === 1;
+  }, [isPreSeason, activeGw]);
+
   const freeTransferAllowance = useMemo(() => {
-    if (!activeGw) return 1;
-    return activeGw.is_playoffs ? 3 : 1;
-  }, [activeGw]);
+    if (isUnlimitedFreeWindow) return 999;
+    if (activeGw?.is_playoffs) {
+      return FANTASY_CONFIG.PLAYOFF_WILDCARD_FREE_TRANSFERS;
+    }
+    return FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS;
+  }, [isUnlimitedFreeWindow, activeGw]);
 
   // Calculate how many players differ between originalSlots and draftSlots
   const pendingChangesCount = useMemo(() => {
@@ -195,7 +200,9 @@ export default function TransfersPage() {
         .filter((p): p is Player => p !== null)
         .map((p) => p.id)
     );
-    if (origIds.size === 0) return 0;
+    if (origIds.size === 0) {
+      return Object.values(draftSlots).filter((p) => p !== null).length;
+    }
 
     let diffCount = 0;
     for (const p of Object.values(draftSlots)) {
@@ -206,19 +213,29 @@ export default function TransfersPage() {
     return diffCount;
   }, [originalSlots, draftSlots]);
 
-  const totalTransfersAfterCommit = alreadyUsedTransfers + pendingChangesCount;
-  const freeTransfersRemaining = Math.max(
-    0,
-    freeTransferAllowance - totalTransfersAfterCommit
-  );
-  const extraPaidTransfers = Math.max(
-    0,
-    totalTransfersAfterCommit - freeTransferAllowance
-  );
-  const totalPointHit = extraPaidTransfers * EXTRA_TRANSFER_PENALTY_PTS;
+  // In Pre-Season, transfers_used stays 0 and extraPaidTransfers is strictly 0
+  const totalTransfersAfterCommit = isUnlimitedFreeWindow
+    ? 0
+    : alreadyUsedTransfers + pendingChangesCount;
 
-  const maxBudget = activeGw?.is_playoffs ? 110.0 : 100.0;
-  const maxPerTeam = activeGw?.is_playoffs ? 3 : 2;
+  const freeTransfersRemaining = isUnlimitedFreeWindow
+    ? 999
+    : Math.max(0, freeTransferAllowance - totalTransfersAfterCommit);
+
+  const extraPaidTransfers = isUnlimitedFreeWindow
+    ? 0
+    : Math.max(0, totalTransfersAfterCommit - freeTransferAllowance);
+
+  const totalPointHit =
+    extraPaidTransfers * FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS;
+
+  const maxBudget = activeGw?.is_playoffs
+    ? FANTASY_CONFIG.PLAYOFF_WILDCARD_BUDGET
+    : FANTASY_CONFIG.REGULAR_SEASON_BUDGET;
+
+  const maxPerTeam = activeGw?.is_playoffs
+    ? FANTASY_CONFIG.PLAYOFF_WILDCARD_MAX_PER_TEAM
+    : FANTASY_CONFIG.REGULAR_SEASON_MAX_PER_TEAM;
 
   const draftCost = useMemo(
     () =>
@@ -231,7 +248,7 @@ export default function TransfersPage() {
 
   const handleConfirmOrWarn = () => {
     setStatusMsg(null);
-    if (extraPaidTransfers > 0) {
+    if (!isUnlimitedFreeWindow && extraPaidTransfers > 0) {
       setShowPenaltyModal(true);
     } else {
       executeTransferCommit();
@@ -267,7 +284,7 @@ export default function TransfersPage() {
         dps2_id: draftSlots.dps2.id,
         sup1_id: draftSlots.sup1.id,
         sup2_id: draftSlots.sup2.id,
-        transfers_used: totalTransfersAfterCommit,
+        transfers_used: isUnlimitedFreeWindow ? 0 : totalTransfersAfterCommit,
       },
       { onConflict: 'user_id,gameweek_id' }
     );
@@ -278,11 +295,15 @@ export default function TransfersPage() {
       setStatusMsg({ type: 'error', text: error.message });
     } else {
       setOriginalSlots(draftSlots);
-      setAlreadyUsedTransfers(totalTransfersAfterCommit);
+      setAlreadyUsedTransfers(
+        isUnlimitedFreeWindow ? 0 : totalTransfersAfterCommit
+      );
       setActiveSlotToSwap(null);
       setStatusMsg({
         type: 'success',
-        text: 'Transfers confirmed and saved to database!',
+        text: isUnlimitedFreeWindow
+          ? 'Pre-Season lineup updated! (0 point penalty)'
+          : 'Transfers confirmed and saved to database!',
       });
     }
   };
@@ -312,6 +333,21 @@ export default function TransfersPage() {
 
   return (
     <div className="space-y-8">
+      {/* Pre-Season Unlimited Transfers Banner */}
+      {isUnlimitedFreeWindow && (
+        <div className="rounded-2xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-zinc-900 px-5 py-3.5 flex items-center gap-3">
+          <Sparkles className="w-5 h-5 text-emerald-400 shrink-0" />
+          <p className="text-xs sm:text-sm font-bold text-emerald-200">
+            PRE-SEASON OPEN: Transfers are{' '}
+            <span className="text-white underline">
+              100% Free and Unlimited
+            </span>{' '}
+            until the Gameweek 1 Lock! Experiment with your roster with zero
+            point penalties.
+          </p>
+        </div>
+      )}
+
       {/* Top Countdown & Transfer Counter Banner */}
       <div className="rounded-2xl border border-zinc-800 bg-gradient-to-r from-zinc-900 via-[#0f131d] to-zinc-950 p-6 shadow-xl">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
@@ -352,7 +388,9 @@ export default function TransfersPage() {
                 Free Transfers Remaining
               </p>
               <p className="text-sm font-black text-emerald-400">
-                {freeTransfersRemaining} Free
+                {isUnlimitedFreeWindow
+                  ? 'UNLIMITED (Pre-Season)'
+                  : `${freeTransfersRemaining} Free`}
                 {totalPointHit > 0 && (
                   <span className="ml-2 text-rose-400">
                     (-{totalPointHit} pts hit)
@@ -411,7 +449,7 @@ export default function TransfersPage() {
               const current = draftSlots[slot.key];
               const orig = originalSlots[slot.key];
               const isModified =
-                current && orig && current.id !== orig.id;
+                current && (!orig || current.id !== orig.id);
               const isSelectedForSwap = activeSlotToSwap === slot.key;
 
               return (
@@ -435,7 +473,7 @@ export default function TransfersPage() {
                         </p>
                         {isModified && (
                           <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                            Draft Swap (was {orig?.name})
+                            {orig ? `Swapped (was ${orig.name})` : 'Added'}
                           </span>
                         )}
                       </div>
@@ -547,7 +585,7 @@ export default function TransfersPage() {
         </div>
       </div>
 
-      {/* Point Penalty Warning Modal */}
+      {/* Point Penalty Warning Modal (Only triggers after GW1 lock) */}
       {showPenaltyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
           <div className="w-full max-w-md rounded-2xl border border-rose-500/40 bg-[#0d1018] p-6 space-y-4 shadow-2xl">
@@ -566,6 +604,7 @@ export default function TransfersPage() {
               <strong className="text-rose-400">
                 -{totalPointHit} fantasy points
               </strong>{' '}
+              ({FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS} pts per extra transfer)
               from your {activeGw?.name} score.
             </p>
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
