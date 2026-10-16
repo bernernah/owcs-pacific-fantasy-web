@@ -47,9 +47,9 @@ export default function TransfersPage() {
   );
   const [countdownText, setCountdownText] = useState<string>('Loading...');
   const [isLocked, setIsLocked] = useState<boolean>(false);
-  const [isPreSeason, setIsPreSeason] = useState<boolean>(() =>
-    isPreSeasonNow()
-  );
+
+  // Initialized with a static boolean so Next.js static prerendering never calls Date.now()
+  const [isPreSeason, setIsPreSeason] = useState<boolean>(true);
 
   const [showPenaltyModal, setShowPenaltyModal] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
@@ -58,7 +58,7 @@ export default function TransfersPage() {
     text: string;
   } | null>(null);
 
-  // Live 1-second Countdown Timer driven by FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE
+  // Client-only evaluation of Date.now() for Pre-Season check & Live Countdown Timer
   useEffect(() => {
     const targetMs = new Date(
       FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE

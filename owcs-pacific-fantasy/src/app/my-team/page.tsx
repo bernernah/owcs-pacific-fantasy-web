@@ -205,12 +205,18 @@ export default function MyTeamPage() {
     );
   }, [draftSlots, savedSlots]);
 
-  const isLocked = useMemo(() => {
-    if (!activeGw) return false;
-    const lockDeadline = new Date(
-      new Date(activeGw.lock_time).getTime() - 15 * 60 * 1000
+  const [isLocked, setIsLocked] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!activeGw) {
+      setIsLocked(false);
+      return;
+    }
+    const lockDeadlineMs =
+      new Date(activeGw.lock_time).getTime() - 15 * 60 * 1000;
+    setIsLocked(
+      Date.now() >= lockDeadlineMs || activeGw.status === 'COMPLETED'
     );
-    return new Date() >= lockDeadline || activeGw.status === 'COMPLETED';
   }, [activeGw]);
 
   // Clicking a slot on the pitch focuses that role and opens the selection modal
