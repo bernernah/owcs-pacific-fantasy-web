@@ -1,20 +1,19 @@
 'use client';
 
-import {
-  calculatePlayerFantasyPoints,
-  syncConfigToDatabase,
-} from '@/lib/config';
-
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Table,
   CheckCircle2,
   RotateCcw,
-  Filter,
   Keyboard,
   Trophy,
+  Layers,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import {
+  calculatePlayerFantasyPoints,
+  syncConfigToDatabase,
+} from '@/lib/config';
 import RoleBadge from '@/components/RoleBadge';
 import type { Player, Team, Gameweek } from '@/types/fantasy';
 
@@ -36,6 +35,8 @@ interface SpreadsheetStatGridProps {
   onSelectGwId: (id: string) => void;
   matchName: string;
   onChangeMatchName: (name: string) => void;
+  mapNumber: number;
+  onChangeMapNumber: (mapNum: number) => void;
   externalPrefill?: Record<string, Partial<PlayerGridStat>> | null;
   onStatsCommitted?: () => void;
   onBanner: (msg: { type: 'success' | 'error'; text: string } | null) => void;
@@ -43,6 +44,7 @@ interface SpreadsheetStatGridProps {
 
 const STAT_COLUMNS = ['kills', 'deaths', 'damage', 'healing'] as const;
 type StatColumnKey = (typeof STAT_COLUMNS)[number];
+const MAP_NUMBERS = [1, 2, 3, 4, 5, 6, 7] as const;
 
 export default function SpreadsheetStatGrid({
   gameweeks,
@@ -52,32 +54,24 @@ export default function SpreadsheetStatGrid({
   onSelectGwId,
   matchName,
   onChangeMatchName,
+  mapNumber,
+  onChangeMapNumber,
   externalPrefill,
   onStatsCommitted,
   onBanner,
 }: SpreadsheetStatGridProps) {
   const supabase = getSupabaseBrowserClient();
 
-  // Automatically syncs SCORING_MULTIPLIERS from src/lib/config.ts into PostgreSQL
-  useEffect(() => {
-    syncConfigToDatabase(supabase);
-  }, [supabase]);
-
-  // Real-time Fantasy Point Preview driven by src/lib/config.ts
-  const calculateRowPoints = (stat: PlayerGridStat | undefined): number => {
-    if (!stat) return 0;
-    return calculatePlayerFantasyPoints(stat);
-  };
-
-  // Optional 2-Team Matchup Filter for faster entry
   const [teamAFilter, setTeamAFilter] = useState<string>('ALL');
   const [teamBFilter, setTeamBFilter] = useState<string>('ALL');
   const [committing, setCommitting] = useState<boolean>(false);
 
-  // Dictionary of stats keyed by player.id
   const [gridMap, setGridMap] = useState<Record<string, PlayerGridStat>>({});
 
-  // Initialize blank grid rows for all players
+  useEffect(() => {
+    syncConfigToDatabase(supabase);
+  }, [supabase]);
+
   useEffect(() => {
     setGridMap((prev) => {
       const next: Record<string, PlayerGridStat> = {};
@@ -96,7 +90,6 @@ export default function SpreadsheetStatGrid({
     });
   }, [players]);
 
-  // Apply external prefill from Gemini AI or Match History Edit
   useEffect(() => {
     if (!externalPrefill) return;
     setGridMap(() => {
@@ -117,7 +110,6 @@ export default function SpreadsheetStatGrid({
     });
   }, [externalPrefill, players]);
 
-  // Auto-generate Match Name when both Team A and Team B are selected
   const handleTeamFilterChange = (slot: 'A' | 'B', teamId: string) => {
     const nextA = slot === 'A' ? teamId : teamAFilter;
     const nextB = slot === 'B' ? teamId : teamBFilter;
@@ -127,13 +119,12 @@ export default function SpreadsheetStatGrid({
     if (nextA !== 'ALL' && nextB !== 'ALL' && nextA !== nextB) {
       const codeA = teams.find((t) => t.id === nextA)?.code;
       const codeB = teams.find((t) => t.id === nextB)?.code;
-      if (codeA && codeB && !matchName.trim()) {
+      if (codeA && codeB) {
         onChangeMatchName(`${codeA} vs ${codeB}`);
       }
     }
   };
 
-  // Sort players by Team Code, then Role (TANK -> DPS -> SUPPORT), then Name
   const visiblePlayers = useMemo(() => {
     const roleOrder: Record<string, number> = {
       TANK: 1,
@@ -208,13 +199,17 @@ export default function SpreadsheetStatGrid({
         [playerId]: {
           ...current,
           [field]: checked,
-          included: field === 'map_won' && checked ? true : field === 'included' ? checked : current.included,
+          included:
+            field === 'map_won' && checked
+              ? true
+              : field === 'included'
+              ? checked
+              : current.included,
         },
       };
     });
   };
 
-  // Mark an entire team as Map Winner (+3.0 pts)
   const setTeamWon = (teamId: string) => {
     if (teamId === 'ALL') return;
     setGridMap((prev) => {
@@ -236,10 +231,11 @@ export default function SpreadsheetStatGrid({
     });
   };
 
+  const calculateRowPoints = (stat: PlayerGridStat | undefined): number => {
+    if (!stat) return 0;
+    return calculatePlayerFantasyPoints(stat);
+  };
 
-  // ==========================================================================
-  // NATIVE SPREADSHEET ARROW-KEY NAVIGATION (UP, DOWN, LEFT, RIGHT, ENTER)
-  // ==========================================================================
   const focusCell = (rowIdx: number, colIdx: number) => {
     const selector = `input[data-grid-cell="${rowIdx}-${colIdx}"]`;
     const target = document.querySelector<HTMLInputElement>(selector);
@@ -298,7 +294,6 @@ export default function SpreadsheetStatGrid({
       };
     }
     setGridMap(reset);
-    onBanner(null);
   };
 
   const includedRows = useMemo(
@@ -317,7 +312,7 @@ export default function SpreadsheetStatGrid({
     if (!matchName.trim()) {
       onBanner({
         type: 'error',
-        text: 'Please enter a Match Name (e.g., "STH vs BXN").',
+        text: 'Please enter a Series Match Name (e.g., "STH vs BXN").',
       });
       return;
     }
@@ -325,7 +320,7 @@ export default function SpreadsheetStatGrid({
     if (includedRows.length === 0) {
       onBanner({
         type: 'error',
-        text: 'Enter stats for at least one player before committing to the ledger.',
+        text: 'Enter stats for at least one player before committing this map.',
       });
       return;
     }
@@ -335,6 +330,7 @@ export default function SpreadsheetStatGrid({
     const payload = includedRows.map((row) => ({
       gameweek_id: selectedGwId,
       match_name: matchName.trim(),
+      map_number: mapNumber,
       player_id: row.player_id,
       kills: Number(row.kills),
       deaths: Number(row.deaths),
@@ -344,7 +340,7 @@ export default function SpreadsheetStatGrid({
     }));
 
     const { error } = await supabase.from('match_logs').upsert(payload, {
-      onConflict: 'gameweek_id,match_name,player_id',
+      onConflict: 'gameweek_id,match_name,map_number,player_id',
     });
 
     setCommitting(false);
@@ -352,12 +348,16 @@ export default function SpreadsheetStatGrid({
     if (error) {
       onBanner({ type: 'error', text: error.message });
     } else {
+      const committedMap = mapNumber;
+      const nextMap = committedMap < 7 ? committedMap + 1 : 7;
+
       onBanner({
         type: 'success',
-        text: `Saved ${payload.length} player stat lines to match_logs for "${matchName.trim()}" and updated all manager totals!`,
+        text: `Saved ${payload.length} player records for "${matchName.trim()} — Map ${committedMap}"! Advanced selector to Map ${nextMap}.`,
       });
+
       handleResetGrid();
-      onChangeMatchName('');
+      onChangeMapNumber(nextMap);
       if (onStatsCommitted) onStatsCommitted();
     }
   };
@@ -370,22 +370,20 @@ export default function SpreadsheetStatGrid({
           <Table className="w-5 h-5 text-orange-400" />
           <div>
             <h2 className="text-lg font-black text-white">
-              Per-Game Match Ledger Spreadsheet
+              2. Map-by-Map Match Ledger Spreadsheet
             </h2>
             <p className="text-xs text-zinc-400">
-              Navigate cells rapidly with{' '}
-              <span className="text-orange-400 font-bold">
-                ↑ ↓ ← → Arrow Keys
-              </span>{' '}
-              or <span className="text-orange-400 font-bold">Enter</span>. Only
-              checked/active rows are committed to the match ledger.
+              Select a series, pick{' '}
+              <span className="text-orange-400 font-bold">Map 1 – Map 7</span>,
+              and commit each map individually. Scores automatically sum across
+              all maps in the series.
             </p>
           </div>
         </div>
 
         <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] font-bold text-zinc-300">
           <Keyboard className="w-3.5 h-3.5 text-orange-400" />
-          Excel-Mode Keyboard Navigation Active
+          ↑ ↓ ← → Arrow-Key Navigation
         </div>
       </div>
 
@@ -410,11 +408,11 @@ export default function SpreadsheetStatGrid({
 
         <div>
           <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5">
-            2. Match Identifier
+            2. Series Match Name
           </label>
           <input
             type="text"
-            placeholder="e.g., STH vs BXN (Map 1)"
+            placeholder="e.g., STH vs BXN"
             value={matchName}
             onChange={(e) => onChangeMatchName(e.target.value)}
             className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white focus:outline-none focus:border-orange-500"
@@ -423,7 +421,7 @@ export default function SpreadsheetStatGrid({
 
         <div>
           <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5">
-            Filter Team A (Optional)
+            Filter Team A (Auto-names Series)
           </label>
           <div className="flex items-center gap-1.5">
             <select
@@ -453,7 +451,7 @@ export default function SpreadsheetStatGrid({
 
         <div>
           <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5">
-            Filter Team B (Optional)
+            Filter Team B (Auto-names Series)
           </label>
           <div className="flex items-center gap-1.5">
             <select
@@ -482,6 +480,39 @@ export default function SpreadsheetStatGrid({
         </div>
       </div>
 
+      {/* Map Number Selector Bar (Bo5 & Bo7 Support) */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Layers className="w-4 h-4 text-orange-400" />
+          <span className="text-xs font-extrabold uppercase tracking-wider text-zinc-300">
+            3. Select Map in Series:
+          </span>
+          <span className="text-xs font-bold text-orange-400">
+            {matchName.trim() ? `${matchName.trim()} — ` : ''}Map {mapNumber}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {MAP_NUMBERS.map((num) => {
+            const active = mapNumber === num;
+            return (
+              <button
+                key={num}
+                type="button"
+                onClick={() => onChangeMapNumber(num)}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-black transition-all ${
+                  active
+                    ? 'bg-orange-500 text-zinc-950 shadow-md shadow-orange-500/20'
+                    : 'bg-zinc-950 text-zinc-400 hover:text-white border border-zinc-800'
+                }`}
+              >
+                Map {num}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Spreadsheet Grid Table */}
       <div className="overflow-x-auto rounded-xl border border-zinc-800 max-h-[560px] overflow-y-auto">
         <table className="w-full text-left border-collapse text-xs">
@@ -503,9 +534,9 @@ export default function SpreadsheetStatGrid({
               <th className="py-3 px-2 w-32 text-right text-zinc-200">
                 Healing
               </th>
-              <th className="py-3 px-3 w-20 text-center">Won (+3)</th>
+              <th className="py-3 px-3 w-20 text-center">Map Won</th>
               <th className="py-3 px-4 w-24 text-right text-orange-400">
-                Points
+                Map Pts
               </th>
             </tr>
           </thead>
@@ -531,7 +562,6 @@ export default function SpreadsheetStatGrid({
                       : 'bg-zinc-950/40 hover:bg-zinc-900/50'
                   }`}
                 >
-                  {/* Included Checkbox */}
                   <td className="py-2 px-3 text-center">
                     <input
                       type="checkbox"
@@ -543,24 +573,20 @@ export default function SpreadsheetStatGrid({
                     />
                   </td>
 
-                  {/* Team Code Badge */}
                   <td className="py-2 px-3">
                     <span className="text-[10px] font-black px-2 py-0.5 rounded bg-zinc-800 text-zinc-200 border border-zinc-700">
                       {player.teams?.code ?? 'OWCS'}
                     </span>
                   </td>
 
-                  {/* Player Name */}
                   <td className="py-2 px-3 font-bold text-white whitespace-nowrap">
                     {player.name}
                   </td>
 
-                  {/* Role Badge */}
                   <td className="py-2 px-3">
                     <RoleBadge role={player.role} size="sm" />
                   </td>
 
-                  {/* 4 Arrow-Navigable Stat Cells: Kills (0), Deaths (1), Damage (2), Healing (3) */}
                   {STAT_COLUMNS.map((colKey, colIdx) => (
                     <td key={colKey} className="py-1.5 px-2">
                       <input
@@ -582,7 +608,6 @@ export default function SpreadsheetStatGrid({
                     </td>
                   ))}
 
-                  {/* Map Won Bonus Checkbox */}
                   <td className="py-2 px-3 text-center">
                     <input
                       type="checkbox"
@@ -594,7 +619,6 @@ export default function SpreadsheetStatGrid({
                     />
                   </td>
 
-                  {/* Live Calculated Points */}
                   <td className="py-2 px-4 text-right font-mono font-black">
                     <span
                       className={
@@ -611,11 +635,11 @@ export default function SpreadsheetStatGrid({
         </table>
       </div>
 
-      {/* Footer Bar: Active Row Count, Clear & Commit Buttons */}
+      {/* Footer Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 pt-2 border-t border-zinc-800">
         <div className="flex items-center gap-4">
           <span className="text-xs font-bold text-zinc-400">
-            Active Players Ready to Commit:{' '}
+            Active Players Ready for Map {mapNumber}:{' '}
             <strong className="text-orange-400">{includedRows.length}</strong>
           </span>
 
@@ -624,7 +648,7 @@ export default function SpreadsheetStatGrid({
             onClick={handleResetGrid}
             className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-800 px-3 py-1.5 rounded-lg"
           >
-            <RotateCcw className="w-3.5 h-3.5" /> Clear Grid
+            <RotateCcw className="w-3.5 h-3.5" /> Clear Grid Numbers
           </button>
         </div>
 
@@ -636,8 +660,8 @@ export default function SpreadsheetStatGrid({
         >
           <CheckCircle2 className="w-4 h-4" />
           {committing
-            ? 'Committing to Ledger...'
-            : `Commit Match Stats (${includedRows.length} Players)`}
+            ? `Committing Map ${mapNumber}...`
+            : `Commit Map ${mapNumber} Stats (${includedRows.length} Players)`}
         </button>
       </div>
     </div>

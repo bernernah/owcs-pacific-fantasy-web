@@ -34,6 +34,7 @@ interface MatchLogRow {
   id: string;
   gameweek_id: string;
   match_name: string;
+  map_number: number;
   player_id: string;
   kills: number;
   deaths: number;
@@ -52,6 +53,7 @@ interface GroupedMatchHistory {
   gw_number: number;
   gw_name: string;
   match_name: string;
+  map_number: number;
   created_at: string;
   logs: MatchLogRow[];
 }
@@ -65,11 +67,12 @@ export default function AdminDashboardPage() {
   const [matchLogs, setMatchLogs] = useState<MatchLogRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Shared Target Gameweek & Match Identifier for AI + Spreadsheet Grid
+  // Shared Target Gameweek, Series Match Name & Map Number
   const [selectedGwId, setSelectedGwId] = useState<string>('');
   const [matchName, setMatchName] = useState<string>('');
+  const [mapNumber, setMapNumber] = useState<number>(1);
 
-  // Phase 3: Hybrid AI Pre-Fill State
+  // Hybrid AI Pre-Fill State
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -82,7 +85,7 @@ export default function AdminDashboardPage() {
     ExtractedScoreboardRow[]
   >([]);
 
-  // Phase 4: Match History State
+  // Match History State
   const [expandedMatchKey, setExpandedMatchKey] = useState<string | null>(null);
   const [deletingMatchKey, setDeletingMatchKey] = useState<string | null>(null);
 
@@ -145,7 +148,6 @@ export default function AdminDashboardPage() {
     loadAdminData();
   }, [loadAdminData]);
 
-  // Smart Fuzzy Player Matcher (handles case, clan tags, and 1/i, 2/z, 0/o OCR swaps)
   const findBestPlayerMatch = useCallback(
     (rawName: string): Player | null => {
       const normalize = (s: string) =>
@@ -159,15 +161,12 @@ export default function AdminDashboardPage() {
       const cleanRaw = rawName.trim().toLowerCase();
       const normRaw = normalize(rawName);
 
-      // 1. Exact case-insensitive match
       const exact = players.find((p) => p.name.toLowerCase() === cleanRaw);
       if (exact) return exact;
 
-      // 2. Normalized leet-speak match (e.g. "Spinel" -> "Sp1nel", "mushzoom" -> "mush2oom")
       const normMatch = players.find((p) => normalize(p.name) === normRaw);
       if (normMatch) return normMatch;
 
-      // 3. Substring match
       const partial = players.find(
         (p) =>
           normRaw.includes(normalize(p.name)) ||
@@ -184,9 +183,6 @@ export default function AdminDashboardPage() {
     setBanner(null);
   };
 
-  // ==========================================================================
-  // PHASE 3: HYBRID GEMINI AI -> PRE-FILL SPREADSHEET STAT GRID
-  // ==========================================================================
   const handleExtractScoreboardToGrid = async () => {
     if (!imageFile) {
       setBanner({
@@ -238,7 +234,6 @@ export default function AdminDashboardPage() {
         }
       }
 
-      // Auto-suggest Match Name if blank and 2 teams were detected
       const codes = Array.from(detectedTeamCodes);
       if (!matchName.trim() && codes.length >= 2) {
         setMatchName(`${codes[0]} vs ${codes[1]}`);
@@ -250,10 +245,10 @@ export default function AdminDashboardPage() {
       const matchedCount = Object.keys(nextPrefill).length;
       setBanner({
         type: 'success',
-        text: `Gemini pre-filled ${matchedCount} players into the Spreadsheet Grid below! ${
+        text: `Gemini pre-filled ${matchedCount} players into Map ${mapNumber} below! ${
           unmapped.length > 0
             ? `(${unmapped.length} unrecognized name(s) can be linked right below.)`
-            : 'Verify the numbers and click Commit Match Stats.'
+            : `Verify the numbers and click Commit Map ${mapNumber} Stats.`
         }`,
       });
     } catch (err: unknown) {
@@ -266,7 +261,6 @@ export default function AdminDashboardPage() {
     }
   };
 
-  // Manually assign an unrecognized OCR row into the Spreadsheet Grid
   const handleAssignUnmappedRow = (
     ocrRow: ExtractedScoreboardRow,
     targetPlayerId: string
@@ -291,14 +285,13 @@ export default function AdminDashboardPage() {
     );
   };
 
-  // ==========================================================================
-  // PHASE 4: MATCH HISTORY GROUPING, EDITING & SAFE DELETION
-  // ==========================================================================
+  // Group Match History by (gameweek_id, match_name, map_number)
   const groupedMatches = useMemo<GroupedMatchHistory[]>(() => {
     const map: Record<string, GroupedMatchHistory> = {};
 
     for (const log of matchLogs) {
-      const key = `${log.gameweek_id}::${log.match_name}`;
+      const mapNum = log.map_number ?? 1;
+      const key = `${log.gameweek_id}::${log.match_name}::${mapNum}`;
       if (!map[key]) {
         map[key] = {
           key,
@@ -306,6 +299,7 @@ export default function AdminDashboardPage() {
           gw_number: log.gameweeks?.number ?? 1,
           gw_name: log.gameweeks?.name ?? 'Gameweek',
           match_name: log.match_name,
+          map_number: mapNum,
           created_at: log.created_at,
           logs: [],
         };
@@ -322,6 +316,7 @@ export default function AdminDashboardPage() {
   const handleLoadMatchIntoGrid = (group: GroupedMatchHistory) => {
     setSelectedGwId(group.gameweek_id);
     setMatchName(group.match_name);
+    setMapNumber(group.map_number);
 
     const prefill: Record<string, Partial<PlayerGridStat>> = {};
     for (const log of group.logs) {
@@ -339,14 +334,14 @@ export default function AdminDashboardPage() {
     setExternalPrefill(prefill);
     setBanner({
       type: 'success',
-      text: `Loaded "${group.match_name}" (${group.logs.length} players) into the Spreadsheet Grid for editing.`,
+      text: `Loaded "${group.match_name} — Map ${group.map_number}" (${group.logs.length} players) into the Spreadsheet Grid for editing.`,
     });
     window.scrollTo({ top: 320, behavior: 'smooth' });
   };
 
   const handleDeleteMatch = async (group: GroupedMatchHistory) => {
     const confirmed = window.confirm(
-      `Delete match "${group.match_name}" (GW${group.gw_number})? This will remove its ${group.logs.length} player stat records from match_logs and automatically recalculate all manager fantasy scores.`
+      `Delete "${group.match_name} — Map ${group.map_number}" (GW${group.gw_number})? This will remove its ${group.logs.length} player records from match_logs and recalculate all manager fantasy scores.`
     );
     if (!confirmed) return;
 
@@ -357,7 +352,8 @@ export default function AdminDashboardPage() {
       .from('match_logs')
       .delete()
       .eq('gameweek_id', group.gameweek_id)
-      .eq('match_name', group.match_name);
+      .eq('match_name', group.match_name)
+      .eq('map_number', group.map_number);
 
     setDeletingMatchKey(null);
 
@@ -366,13 +362,12 @@ export default function AdminDashboardPage() {
     } else {
       setBanner({
         type: 'success',
-        text: `Deleted "${group.match_name}" from match_logs and recalculated all affected manager totals!`,
+        text: `Deleted "${group.match_name} — Map ${group.map_number}" and recalculated all affected manager totals!`,
       });
       loadAdminData();
     }
   };
 
-  // Schedule & Gameweek Update Handler
   const handleUpdateGameweek = async (
     gwId: string,
     lockTimeIso: string,
@@ -394,7 +389,6 @@ export default function AdminDashboardPage() {
     }
   };
 
-  // Quick Add Pro Player
   const handleQuickAddPlayer = async (e: React.FormEvent) => {
     e.preventDefault();
     setBanner(null);
@@ -412,7 +406,7 @@ export default function AdminDashboardPage() {
     if (!targetTeamId) {
       setBanner({
         type: 'error',
-        text: 'Create at least one OWCS Team in Section 4 before adding players.',
+        text: 'Create at least one OWCS Team before adding players.',
       });
       return;
     }
@@ -458,7 +452,7 @@ export default function AdminDashboardPage() {
               OWCS COMMISSIONER ADMIN HUB
             </h1>
             <p className="text-xs text-zinc-400">
-              Hybrid AI Scoreboard Pre-Fill, Arrow-Key Spreadsheet Ledger &
+              Map-by-Map AI Scoreboard Pre-Fill, Arrow-Key Spreadsheet Ledger &
               Match History Controls
             </p>
           </div>
@@ -482,20 +476,19 @@ export default function AdminDashboardPage() {
         </div>
       )}
 
-      {/* ====================================================================
-          PHASE 3: HYBRID GEMINI AI SCREENSHOT PRE-FILLER
-      ==================================================================== */}
+      {/* 1. HYBRID GEMINI AI SCREENSHOT PRE-FILLER */}
       <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-5 shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-zinc-800 pb-4">
           <div className="flex items-center gap-2.5">
             <Sparkles className="w-5 h-5 text-orange-400" />
             <div>
               <h2 className="text-lg font-black text-white">
-                1. Hybrid AI Scoreboard Pre-Filler (Optional)
+                1. Hybrid AI Map Scoreboard Pre-Filler (Optional)
               </h2>
               <p className="text-xs text-zinc-400">
-                Drop a screenshot here to automatically extract stats and
-                pre-fill the Spreadsheet Grid below for verification.
+                Drop a post-map scoreboard screenshot here to pre-fill{' '}
+                <strong className="text-orange-400">Map {mapNumber}</strong> in
+                the Spreadsheet Grid below.
               </p>
             </div>
           </div>
@@ -542,7 +535,7 @@ export default function AdminDashboardPage() {
                     {imageFile?.name}
                   </p>
                   <p className="text-[11px] text-zinc-400 mt-1">
-                    Click or drag another screenshot to replace
+                    Click or drag another map screenshot to replace
                   </p>
                 </div>
               </div>
@@ -550,7 +543,8 @@ export default function AdminDashboardPage() {
               <div className="space-y-1.5 py-2">
                 <UploadCloud className="w-8 h-8 text-orange-400 mx-auto" />
                 <p className="text-xs sm:text-sm font-bold text-white">
-                  Drag & drop an OWCS scoreboard screenshot, or click to browse
+                  Drag & drop a Map {mapNumber} scoreboard screenshot, or click
+                  to browse
                 </p>
                 <p className="text-[11px] text-zinc-500">
                   Extracts Kills, Deaths, Damage & Healing directly into the
@@ -569,17 +563,19 @@ export default function AdminDashboardPage() {
             >
               <Sparkles className="w-4 h-4" />
               {parsingImage
-                ? 'Extracting into Grid...'
-                : 'Extract & Pre-Fill Spreadsheet'}
+                ? `Extracting into Map ${mapNumber}...`
+                : `Pre-Fill Map ${mapNumber} Grid`}
             </button>
             <p className="text-[11px] text-zinc-500 text-center">
-              Nothing is saved to the database until you review the grid and
-              click <strong className="text-zinc-300">Commit Match Stats</strong>.
+              Review the extracted numbers below, then click{' '}
+              <strong className="text-zinc-300">
+                Commit Map {mapNumber} Stats
+              </strong>
+              .
             </p>
           </div>
         </div>
 
-        {/* Unmapped OCR Row Resolver (if Gemini reads an unfamiliar nickname) */}
         {unmappedOcrRows.length > 0 && (
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 space-y-3">
             <p className="text-xs font-bold text-amber-300">
@@ -622,9 +618,7 @@ export default function AdminDashboardPage() {
         )}
       </div>
 
-      {/* ====================================================================
-          PHASE 2 & 3: ARROW-KEY SPREADSHEET STAT GRID
-      ==================================================================== */}
+      {/* 2. MAP-BY-MAP SPREADSHEET STAT GRID */}
       <SpreadsheetStatGrid
         gameweeks={gameweeks}
         teams={teams}
@@ -633,35 +627,39 @@ export default function AdminDashboardPage() {
         onSelectGwId={setSelectedGwId}
         matchName={matchName}
         onChangeMatchName={setMatchName}
+        mapNumber={mapNumber}
+        onChangeMapNumber={setMapNumber}
         externalPrefill={externalPrefill}
         onStatsCommitted={loadAdminData}
         onBanner={setBanner}
       />
 
-      {/* ====================================================================
-          PHASE 4: MATCH HISTORY LEDGER & SAFE DELETION
-      ==================================================================== */}
+      {/* 3. MAP-GRANULAR MATCH HISTORY LEDGER & SAFE DELETION */}
       <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-5 shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-zinc-800 pb-4">
           <div className="flex items-center gap-2.5">
             <History className="w-5 h-5 text-orange-400" />
             <div>
               <h2 className="text-lg font-black text-white">
-                3. Committed Match History Ledger
+                3. Committed Map & Match History Ledger
               </h2>
               <p className="text-xs text-zinc-400">
-                Inspect individual matches in <code className="text-orange-400">match_logs</code>, load them back into the grid to edit, or safely delete a match to recalculate all manager scores.
+                Inspect individual maps in{' '}
+                <code className="text-orange-400">match_logs</code>, load any
+                map back into the grid to edit, or delete a specific map to
+                recalculate manager totals.
               </p>
             </div>
           </div>
           <span className="text-xs font-bold text-zinc-400">
-            {groupedMatches.length} Committed Match(es)
+            {groupedMatches.length} Committed Map(s)
           </span>
         </div>
 
         {groupedMatches.length === 0 ? (
           <div className="py-10 text-center border border-dashed border-zinc-800 rounded-xl text-xs text-zinc-500">
-            No matches committed to <code className="text-zinc-400">match_logs</code> yet. Use the Spreadsheet Grid above to commit your first game!
+            No maps committed to{' '}
+            <code className="text-zinc-400">match_logs</code> yet.
           </div>
         ) : (
           <div className="space-y-3">
@@ -683,6 +681,9 @@ export default function AdminDashboardPage() {
                     >
                       <span className="text-xs font-black px-2.5 py-1 rounded-lg bg-orange-500/15 text-orange-400 border border-orange-500/30">
                         GW{group.gw_number}
+                      </span>
+                      <span className="text-xs font-black px-2.5 py-1 rounded-lg bg-zinc-800 text-white border border-zinc-700">
+                        Map {group.map_number}
                       </span>
                       <div>
                         <h3 className="text-sm font-black text-white flex items-center gap-2">
@@ -707,7 +708,7 @@ export default function AdminDashboardPage() {
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors"
                       >
                         <Edit3 className="w-3.5 h-3.5 text-orange-400" />
-                        Load into Grid to Edit
+                        Edit Map {group.map_number}
                       </button>
 
                       <button
@@ -717,7 +718,9 @@ export default function AdminDashboardPage() {
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-extrabold bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 transition-colors disabled:opacity-40"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                        {isDeleting ? 'Deleting...' : 'Delete Match'}
+                        {isDeleting
+                          ? 'Deleting...'
+                          : `Delete Map ${group.map_number}`}
                       </button>
                     </div>
                   </div>
@@ -735,7 +738,7 @@ export default function AdminDashboardPage() {
                             <th className="py-2 px-2 text-right">Healing</th>
                             <th className="py-2 px-2 text-center">Won</th>
                             <th className="py-2 px-2 text-right text-orange-400">
-                              Fantasy Pts
+                              Map Pts
                             </th>
                           </tr>
                         </thead>
@@ -787,9 +790,7 @@ export default function AdminDashboardPage() {
         )}
       </div>
 
-      {/* ====================================================================
-          SECTION 4 & 5: SCHEDULE CONTROLS, TEAM MANAGER & QUICK ADD PLAYER
-      ==================================================================== */}
+      {/* SECTION 4 & 5: SCHEDULE CONTROLS, TEAM MANAGER & QUICK ADD PLAYER */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-7 rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-4">
           <div className="flex items-center gap-2.5 border-b border-zinc-800 pb-3">
@@ -916,7 +917,11 @@ function GameweekRowEditor({
           value={status}
           onChange={(e) => setStatus(e.target.value as GameweekStatus)}
           className="bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-bold text-white"
-        />
+        >
+          <option value="UPCOMING">UPCOMING</option>
+          <option value="ACTIVE">ACTIVE</option>
+          <option value="COMPLETED">COMPLETED</option>
+        </select>
         <button
           type="button"
           onClick={() =>
