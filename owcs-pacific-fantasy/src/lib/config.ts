@@ -1,50 +1,86 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+
 // ============================================================================
-// OWCS PACIFIC FANTASY — CENTRAL LEAGUE CONFIGURATION
-// Edit the constants below to control lock timers, pre-season state, and rules.
+// OWCS PACIFIC FANTASY — CENTRAL LEAGUE & SCORING CONFIGURATION
+// Editing any constant below updates BOTH the Frontend UI and Supabase DB!
 // ============================================================================
 
+export const SCORING_MULTIPLIERS = {
+  /** Points awarded per Elimination / Kill */
+  POINTS_PER_KILL: 1.0,
+
+  /** Points deducted per Death (use a negative number, e.g. -1.0) */
+  POINTS_PER_DEATH: -1.0,
+
+  /** Points awarded per 1,000 Hero Damage dealt */
+  POINTS_PER_1K_DAMAGE: 1.0,
+
+  /** Points awarded per 1,000 Healing done */
+  POINTS_PER_1K_HEALING: 1.2,
+
+  /** Flat bonus points awarded if the player's team won the map */
+  POINTS_PER_MAP_WIN: 3.0,
+
+  /** Multiplier applied to a manager's designated Captain (1.5 = +50% points) */
+  CAPTAIN_MULTIPLIER: 1.5,
+} as const;
+
 export const FANTASY_CONFIG = {
-  /**
-   * 1. NEXT TRANSFER LOCK DEADLINE
-   * Powers the live countdown timer on the /transfers page.
-   * Format: YYYY-MM-DDTHH:mm:ss+08:00 (AWST / SGT)
-   */
   NEXT_TRANSFER_LOCK_DEADLINE:
     process.env.NEXT_PUBLIC_TRANSFER_DEADLINE || '2026-10-26T18:00:00+08:00',
 
-  /**
-   * 2. PRE-SEASON CUTOFF (GAMEWEEK 1 LOCK)
-   * While the current time is BEFORE this timestamp, the league is in "Pre-Season" mode:
-   * - All transfers are 100% FREE and UNLIMITED.
-   * - Point penalties are 0, and `transfers_used` is saved as 0 in the database.
-   */
   SEASON_START_GW1_LOCK: '2026-10-26T18:00:00+08:00',
 
-  /**
-   * 3. EXTRA TRANSFER HIT COST
-   * Exact fantasy point deduction for each transfer beyond a manager's free allowance
-   * once the regular season has started.
-   */
   TRANSFER_HIT_PENALTY_PTS: 4,
 
-  /**
-   * 4. FREE TRANSFERS PER GAMEWEEK (Post-GW1 Lock)
-   */
   REGULAR_SEASON_FREE_TRANSFERS: 1,
   PLAYOFF_WILDCARD_FREE_TRANSFERS: 3,
 
-  /**
-   * 5. SALARY CAPS & TEAM CONCENTRATION LIMITS
-   */
   REGULAR_SEASON_BUDGET: 100.0,
   PLAYOFF_WILDCARD_BUDGET: 110.0,
   REGULAR_SEASON_MAX_PER_TEAM: 2,
   PLAYOFF_WILDCARD_MAX_PER_TEAM: 3,
+
+  SCORING: SCORING_MULTIPLIERS,
 } as const;
 
 /**
- * Helper: Returns true if the current date/time is prior to the GW1 lock deadline.
+ * Shared formula used across the Spreadsheet Grid and Admin previews.
  */
+export function calculatePlayerFantasyPoints(stats: {
+  kills: number;
+  deaths: number;
+  damage: number;
+  healing: number;
+  map_won: boolean;
+}): number {
+  const pts =
+    Number(stats.kills) * SCORING_MULTIPLIERS.POINTS_PER_KILL +
+    Number(stats.deaths) * SCORING_MULTIPLIERS.POINTS_PER_DEATH +
+    (Number(stats.damage) / 1000.0) * SCORING_MULTIPLIERS.POINTS_PER_1K_DAMAGE +
+    (Number(stats.healing) / 1000.0) *
+      SCORING_MULTIPLIERS.POINTS_PER_1K_HEALING +
+    (stats.map_won ? SCORING_MULTIPLIERS.POINTS_PER_MAP_WIN : 0.0);
+
+  return Number(pts.toFixed(2));
+}
+
+/**
+ * Pushes SCORING_MULTIPLIERS & TRANSFER_HIT_PENALTY_PTS from config.ts
+ * directly into PostgreSQL so database triggers always match this file.
+ */
+export async function syncConfigToDatabase(supabase: SupabaseClient) {
+  await supabase.rpc('sync_scoring_config', {
+    p_kill: SCORING_MULTIPLIERS.POINTS_PER_KILL,
+    p_death: SCORING_MULTIPLIERS.POINTS_PER_DEATH,
+    p_dmg: SCORING_MULTIPLIERS.POINTS_PER_1K_DAMAGE,
+    p_heal: SCORING_MULTIPLIERS.POINTS_PER_1K_HEALING,
+    p_win: SCORING_MULTIPLIERS.POINTS_PER_MAP_WIN,
+    p_captain_mult: SCORING_MULTIPLIERS.CAPTAIN_MULTIPLIER,
+    p_transfer_penalty: FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS,
+  });
+}
+
 export function isPreSeasonNow(): boolean {
   const gw1LockMs = new Date(FANTASY_CONFIG.SEASON_START_GW1_LOCK).getTime();
   if (Number.isNaN(gw1LockMs)) return false;

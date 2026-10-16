@@ -1,5 +1,10 @@
 'use client';
 
+import {
+  calculatePlayerFantasyPoints,
+  syncConfigToDatabase,
+} from '@/lib/config';
+
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Table,
@@ -52,6 +57,17 @@ export default function SpreadsheetStatGrid({
   onBanner,
 }: SpreadsheetStatGridProps) {
   const supabase = getSupabaseBrowserClient();
+
+  // Automatically syncs SCORING_MULTIPLIERS from src/lib/config.ts into PostgreSQL
+  useEffect(() => {
+    syncConfigToDatabase(supabase);
+  }, [supabase]);
+
+  // Real-time Fantasy Point Preview driven by src/lib/config.ts
+  const calculateRowPoints = (stat: PlayerGridStat | undefined): number => {
+    if (!stat) return 0;
+    return calculatePlayerFantasyPoints(stat);
+  };
 
   // Optional 2-Team Matchup Filter for faster entry
   const [teamAFilter, setTeamAFilter] = useState<string>('ALL');
@@ -220,17 +236,6 @@ export default function SpreadsheetStatGrid({
     });
   };
 
-  // Real-time Fantasy Point Preview
-  const calculateRowPoints = (stat: PlayerGridStat | undefined): number => {
-    if (!stat) return 0;
-    const pts =
-      stat.kills * 1.0 -
-      stat.deaths * 1.0 +
-      (stat.damage / 1000.0) * 1.0 +
-      (stat.healing / 1000.0) * 1.2 +
-      (stat.map_won ? 3.0 : 0.0);
-    return Number(pts.toFixed(2));
-  };
 
   // ==========================================================================
   // NATIVE SPREADSHEET ARROW-KEY NAVIGATION (UP, DOWN, LEFT, RIGHT, ENTER)

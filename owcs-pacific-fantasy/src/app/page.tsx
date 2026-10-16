@@ -30,6 +30,7 @@ interface ManagerStandingRow {
   sup2: Player | null;
   totalBudgetUsed: number;
   totalScore: number;
+  captain_id?: string | null;
 }
 
 export default function LeaderboardPage() {
@@ -168,21 +169,21 @@ export default function LeaderboardPage() {
           score = gwRoster ? Number(gwRoster.points_earned ?? 0) : 0;
         }
 
-        const tank = displayedRoster
-          ? playersById[displayedRoster.tank_id] ?? null
-          : null;
-        const dps1 = displayedRoster
-          ? playersById[displayedRoster.dps1_id] ?? null
-          : null;
-        const dps2 = displayedRoster
-          ? playersById[displayedRoster.dps2_id] ?? null
-          : null;
-        const sup1 = displayedRoster
-          ? playersById[displayedRoster.sup1_id] ?? null
-          : null;
-        const sup2 = displayedRoster
-          ? playersById[displayedRoster.sup2_id] ?? null
-          : null;
+        const tank = displayedRoster?.tank_id
+    ? playersById[displayedRoster.tank_id] ?? null
+    : null;
+  const dps1 = displayedRoster?.dps1_id
+    ? playersById[displayedRoster.dps1_id] ?? null
+    : null;
+  const dps2 = displayedRoster?.dps2_id
+    ? playersById[displayedRoster.dps2_id] ?? null
+    : null;
+  const sup1 = displayedRoster?.sup1_id
+    ? playersById[displayedRoster.sup1_id] ?? null
+    : null;
+  const sup2 = displayedRoster?.sup2_id
+    ? playersById[displayedRoster.sup2_id] ?? null
+    : null;
 
         const totalBudgetUsed = [tank, dps1, dps2, sup1, sup2].reduce(
           (sum, p) => sum + (p ? Number(p.price) : 0),
@@ -287,18 +288,23 @@ export default function LeaderboardPage() {
     );
   };
 
-  const renderPlayerSlotCell = (player: Player | null) => {
-    if (!player) {
-      return <span className="text-zinc-600 font-mono text-xs">—</span>;
-    }
-    return (
-      <div className="inline-flex items-center gap-1.5">
-        <span className="font-semibold text-zinc-100 text-xs sm:text-sm tracking-tight">
-          {player.name}
+  const renderPlayerSlotCell = (player: Player | null, captainId?: string | null) => {
+  if (!player) {
+    return <span className="text-zinc-600 font-mono text-xs">-</span>;
+  }
+  return (
+    <div className="inline-flex items-center gap-1.5">
+      <span className="font-semibold text-zinc-100 text-xs sm:text-sm tracking-tight">
+        {player.name}
+      </span>
+      {player.id === captainId && (
+        <span className="px-1 py-0.5 text-[9px] font-black rounded bg-amber-400 text-zinc-950" title="Captain (1.5x Points)">
+          C
         </span>
-      </div>
-    );
-  };
+      )}
+    </div>
+  );
+};
 
   return (
     <div className="space-y-6">
@@ -449,27 +455,27 @@ export default function LeaderboardPage() {
 
                     {/* 3. Tank */}
                     <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.tank)}
+                      {renderPlayerSlotCell(row.tank, row.captain_id)}
                     </td>
 
                     {/* 4. DPS 1 */}
                     <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.dps1)}
+                      {renderPlayerSlotCell(row.dps1, row.captain_id)}
                     </td>
 
                     {/* 5. DPS 2 */}
                     <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.dps2)}
+                      {renderPlayerSlotCell(row.dps2, row.captain_id)}
                     </td>
 
                     {/* 6. Support 1 */}
                     <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.sup1)}
+                      {renderPlayerSlotCell(row.sup1, row.captain_id)}
                     </td>
 
                     {/* 7. Support 2 */}
                     <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.sup2)}
+                      {renderPlayerSlotCell(row.sup2, row.captain_id)}
                     </td>
 
                     {/* 8. Total Score */}

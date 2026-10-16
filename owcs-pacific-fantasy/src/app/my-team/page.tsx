@@ -14,8 +14,10 @@ import {
   RotateCcw,
   Save,
   ArrowDownCircle,
+  Crown,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
+import { FANTASY_CONFIG, SCORING_MULTIPLIERS } from '@/lib/config';
 import RoleBadge from '@/components/RoleBadge';
 import type {
   Player,
@@ -65,7 +67,11 @@ export default function MyTeamPage() {
     sup2: null,
   });
 
-  // Active slot being targeted by the user (e.g. 'dps1')
+  // Saved Captain vs Local Draft Captain
+  const [savedCaptainId, setSavedCaptainId] = useState<string | null>(null);
+  const [draftCaptainId, setDraftCaptainId] = useState<string | null>(null);
+
+  // Active slot being targeted by the user
   const [activeSlotKey, setActiveSlotKey] = useState<SlotKey | null>(null);
   const [isRoleModalOpen, setIsRoleModalOpen] = useState<boolean>(false);
 
@@ -75,6 +81,7 @@ export default function MyTeamPage() {
   const [maxPriceFilter, setMaxPriceFilter] = useState<number>(50);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
+  const [isLocked, setIsLocked] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{
@@ -106,14 +113,13 @@ export default function MyTeamPage() {
 
       let gws = (gwData as Gameweek[]) ?? [];
 
-      // Safeguard: If gameweeks table is empty, create GW1 automatically
       if (gws.length === 0) {
         const { data: createdGw } = await supabase
           .from('gameweeks')
           .insert({
             number: 1,
             name: 'Gameweek 1 - Day 1',
-            lock_time: '2026-10-26T10:00:00Z',
+            lock_time: FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE,
             is_playoffs: false,
             status: 'ACTIVE',
           })
@@ -162,8 +168,16 @@ export default function MyTeamPage() {
             sup2: baseRoster.sup2_id ? byId[baseRoster.sup2_id] ?? null : null,
           };
 
+          const initialCapId =
+            baseRoster.captain_id ??
+            loadedSlots.tank?.id ??
+            loadedSlots.dps1?.id ??
+            null;
+
           setSavedSlots(loadedSlots);
           setDraftSlots(loadedSlots);
+          setSavedCaptainId(baseRoster.captain_id ?? null);
+          setDraftCaptainId(initialCapId);
         }
       }
 
@@ -173,9 +187,25 @@ export default function MyTeamPage() {
     loadTeamSheet();
   }, [supabase]);
 
-  // Dynamic Stage Rules (Regular Season vs Playoff Wildcard)
-  const maxBudget = activeGw?.is_playoffs ? 110.0 : 100.0;
-  const maxPerTeam = activeGw?.is_playoffs ? 3 : 2;
+  // Client-only evaluation of lock status
+  useEffect(() => {
+    if (!activeGw) {
+      setIsLocked(false);
+      return;
+    }
+    const lockDeadlineMs =
+      new Date(activeGw.lock_time).getTime() - 15 * 60 * 1000;
+    setIsLocked(
+      Date.now() >= lockDeadlineMs || activeGw.status === 'COMPLETED'
+    );
+  }, [activeGw]);
+
+  const maxBudget = activeGw?.is_playoffs
+    ? FANTASY_CONFIG.PLAYOFF_WILDCARD_BUDGET
+    : FANTASY_CONFIG.REGULAR_SEASON_BUDGET;
+  const maxPerTeam = activeGw?.is_playoffs
+    ? FANTASY_CONFIG.PLAYOFF_WILDCARD_MAX_PER_TEAM
+    : FANTASY_CONFIG.REGULAR_SEASON_MAX_PER_TEAM;
 
   const selectedPlayers = useMemo(
     () => Object.values(draftSlots).filter((p): p is Player => p !== null),
@@ -197,29 +227,21 @@ export default function MyTeamPage() {
     return counts;
   }, [selectedPlayers]);
 
-  // Detect if local draft differs from what is saved in Supabase
+  // Detect if local draft (slots OR captain) differs from what is saved in Supabase
   const hasUnsavedChanges = useMemo(() => {
     const keys: SlotKey[] = ['tank', 'dps1', 'dps2', 'sup1', 'sup2'];
-    return keys.some(
+    const slotsChanged = keys.some(
       (k) => (draftSlots[k]?.id ?? null) !== (savedSlots[k]?.id ?? null)
     );
-  }, [draftSlots, savedSlots]);
+    const captainChanged = draftCaptainId !== savedCaptainId;
+    return slotsChanged || captainChanged;
+  }, [draftSlots, savedSlots, draftCaptainId, savedCaptainId]);
 
-  const [isLocked, setIsLocked] = useState<boolean>(false);
+  const draftCaptainPlayer = useMemo(
+    () => selectedPlayers.find((p) => p.id === draftCaptainId) ?? null,
+    [selectedPlayers, draftCaptainId]
+  );
 
-  useEffect(() => {
-    if (!activeGw) {
-      setIsLocked(false);
-      return;
-    }
-    const lockDeadlineMs =
-      new Date(activeGw.lock_time).getTime() - 15 * 60 * 1000;
-    setIsLocked(
-      Date.now() >= lockDeadlineMs || activeGw.status === 'COMPLETED'
-    );
-  }, [activeGw]);
-
-  // Clicking a slot on the pitch focuses that role and opens the selection modal
   const handleSlotClick = (slotKey: SlotKey) => {
     if (isLocked) return;
     const meta = SLOT_METADATA[slotKey];
@@ -236,7 +258,22 @@ export default function MyTeamPage() {
     marketSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  // Add or swap player in local draft state ONLY (does not write to DB)
+  const assignSlotAndMaintainCaptain = (
+    targetKey: SlotKey,
+    newPlayer: Player
+  ) => {
+    setDraftSlots((prev) => {
+      const replacedPlayer = prev[targetKey];
+      const next = { ...prev, [targetKey]: newPlayer };
+
+      // If no captain yet, or if the user just swapped out their captain, assign the new player as captain
+      if (!draftCaptainId || replacedPlayer?.id === draftCaptainId) {
+        setDraftCaptainId(newPlayer.id);
+      }
+      return next;
+    });
+  };
+
   const handleSelectPlayerIntoDraft = (
     player: Player,
     explicitSlot?: SlotKey | null
@@ -247,20 +284,18 @@ export default function MyTeamPage() {
       return;
     }
 
-    // If user clicked a specific slot (e.g. dps2) and the player's role matches, place them right there
     if (
       explicitSlot &&
       SLOT_METADATA[explicitSlot].expectedRole === player.role
     ) {
-      setDraftSlots((prev) => ({ ...prev, [explicitSlot]: player }));
+      assignSlotAndMaintainCaptain(explicitSlot, player);
       setIsRoleModalOpen(false);
       return;
     }
 
-    // Otherwise auto-slot into the first available slot for that role
     if (player.role === 'TANK') {
       if (!draftSlots.tank) {
-        setDraftSlots((prev) => ({ ...prev, tank: player }));
+        assignSlotAndMaintainCaptain('tank', player);
       } else {
         setFeedback({
           type: 'error',
@@ -270,9 +305,9 @@ export default function MyTeamPage() {
       }
     } else if (player.role === 'DPS') {
       if (!draftSlots.dps1) {
-        setDraftSlots((prev) => ({ ...prev, dps1: player }));
+        assignSlotAndMaintainCaptain('dps1', player);
       } else if (!draftSlots.dps2) {
-        setDraftSlots((prev) => ({ ...prev, dps2: player }));
+        assignSlotAndMaintainCaptain('dps2', player);
       } else {
         setFeedback({
           type: 'error',
@@ -282,9 +317,9 @@ export default function MyTeamPage() {
       }
     } else if (player.role === 'SUPPORT') {
       if (!draftSlots.sup1) {
-        setDraftSlots((prev) => ({ ...prev, sup1: player }));
+        assignSlotAndMaintainCaptain('sup1', player);
       } else if (!draftSlots.sup2) {
-        setDraftSlots((prev) => ({ ...prev, sup2: player }));
+        assignSlotAndMaintainCaptain('sup2', player);
       } else {
         setFeedback({
           type: 'error',
@@ -299,16 +334,25 @@ export default function MyTeamPage() {
 
   const handleRemoveSlot = (slotKey: SlotKey) => {
     setFeedback(null);
-    setDraftSlots((prev) => ({ ...prev, [slotKey]: null }));
+    const removedPlayer = draftSlots[slotKey];
+    const nextSlots = { ...draftSlots, [slotKey]: null };
+    setDraftSlots(nextSlots);
+
+    if (removedPlayer && removedPlayer.id === draftCaptainId) {
+      const remaining = Object.values(nextSlots).find(
+        (p): p is Player => p !== null
+      );
+      setDraftCaptainId(remaining?.id ?? null);
+    }
   };
 
   const handleResetDraft = () => {
     setFeedback(null);
     setDraftSlots(savedSlots);
+    setDraftCaptainId(savedCaptainId);
     setActiveSlotKey(null);
   };
 
-  // Manual 'Save Lineup' action — commits local draft state to Supabase
   const handleSaveSquad = async () => {
     setFeedback(null);
 
@@ -338,7 +382,24 @@ export default function MyTeamPage() {
       setFeedback({
         type: 'error',
         message:
-          'You must fill all 5 starting role slots (1 Tank, 2 DPS, 2 Support) before saving to the database.',
+          'You must fill all 5 starting role slots (1 Tank, 2 DPS, 2 Support) before saving.',
+      });
+      return;
+    }
+
+    const activeFiveIds = [
+      draftSlots.tank.id,
+      draftSlots.dps1.id,
+      draftSlots.dps2.id,
+      draftSlots.sup1.id,
+      draftSlots.sup2.id,
+    ];
+
+    if (!draftCaptainId || !activeFiveIds.includes(draftCaptainId)) {
+      setFeedback({
+        type: 'error',
+        message:
+          'Please select one of your 5 starters as your Team Captain (1.5x points) before saving.',
       });
       return;
     }
@@ -374,6 +435,7 @@ export default function MyTeamPage() {
       dps2_id: draftSlots.dps2.id,
       sup1_id: draftSlots.sup1.id,
       sup2_id: draftSlots.sup2.id,
+      captain_id: draftCaptainId,
       transfers_used: existingRoster?.transfers_used ?? 0,
     };
 
@@ -390,9 +452,10 @@ export default function MyTeamPage() {
     } else {
       setExistingRoster(data as UserRoster);
       setSavedSlots(draftSlots);
+      setSavedCaptainId(draftCaptainId);
       setFeedback({
         type: 'success',
-        message: `Lineup saved to database for ${activeGw.name}!`,
+        message: `Lineup & Captain (${draftCaptainPlayer?.name}) locked in for ${activeGw.name}!`,
       });
     }
   };
@@ -424,13 +487,16 @@ export default function MyTeamPage() {
     const isChangedInDraft =
       (player?.id ?? null) !== (savedPlayer?.id ?? null);
     const isTargeted = activeSlotKey === slotKey;
+    const isCaptain = Boolean(player && player.id === draftCaptainId);
 
     return (
       <div
         key={slotKey}
         onClick={() => handleSlotClick(slotKey)}
-        className={`relative rounded-2xl border p-4 transition-all flex flex-col justify-between min-h-[140px] cursor-pointer ${
-          isTargeted
+        className={`relative rounded-2xl border p-4 transition-all flex flex-col justify-between min-h-[155px] cursor-pointer ${
+          isCaptain
+            ? 'bg-gradient-to-b from-amber-500/15 via-zinc-900/95 to-zinc-900 border-amber-400 ring-2 ring-amber-400/30 shadow-xl shadow-amber-500/10'
+            : isTargeted
             ? 'bg-orange-500/10 border-orange-500 ring-2 ring-orange-500/30 shadow-xl'
             : player
             ? isChangedInDraft
@@ -439,10 +505,20 @@ export default function MyTeamPage() {
             : 'bg-zinc-950/60 border-dashed border-zinc-800 hover:border-orange-500/60'
         }`}
       >
-        <div className="flex items-center justify-between">
-          <RoleBadge role={expectedRole} size="sm" />
+        {/* Top Row: Role Badge + Captain Pill + Remove Button */}
+        <div className="flex items-center justify-between gap-1">
           <div className="flex items-center gap-1.5">
-            {isChangedInDraft && (
+            <RoleBadge role={expectedRole} size="sm" />
+            {isCaptain && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-400 text-zinc-950 font-black text-[10px] uppercase tracking-wider shadow">
+                <Crown className="w-3 h-3 fill-zinc-950" />C •{' '}
+                {SCORING_MULTIPLIERS.CAPTAIN_MULTIPLIER}x
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {isChangedInDraft && !isCaptain && (
               <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                 Draft
               </span>
@@ -468,6 +544,7 @@ export default function MyTeamPage() {
           </div>
         </div>
 
+        {/* Center: Player Name or Empty Prompt */}
         {player ? (
           <div className="my-2">
             <span className="text-[10px] font-extrabold uppercase tracking-wider text-orange-400">
@@ -489,11 +566,38 @@ export default function MyTeamPage() {
           </div>
         )}
 
-        <div className="pt-2 border-t border-zinc-800/80 flex items-center justify-between text-xs">
-          <span className="text-zinc-500 font-semibold">Contract</span>
+        {/* Footer: Contract Price & 'C' Captain Toggle Button */}
+        <div className="pt-2.5 border-t border-zinc-800/80 flex items-center justify-between text-xs">
           <span className="font-black text-emerald-400">
             {player ? `$${Number(player.price).toFixed(1)}M` : '—'}
           </span>
+
+          {player ? (
+            <button
+              type="button"
+              disabled={isLocked}
+              onClick={(e) => {
+                e.stopPropagation();
+                setFeedback(null);
+                setDraftCaptainId(player.id);
+              }}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                isCaptain
+                  ? 'bg-amber-400 text-zinc-950 shadow shadow-amber-400/30'
+                  : 'bg-zinc-800 hover:bg-amber-400/20 text-zinc-300 hover:text-amber-300 border border-zinc-700'
+              }`}
+              title="Set as 1.5x Points Captain"
+            >
+              <span className="w-3.5 h-3.5 rounded-full bg-black/20 flex items-center justify-center font-black">
+                C
+              </span>
+              {isCaptain ? 'Captain' : 'Make Capt'}
+            </button>
+          ) : (
+            <span className="text-zinc-600 text-[10px] font-semibold">
+              Contract
+            </span>
+          )}
         </div>
       </div>
     );
@@ -571,16 +675,13 @@ export default function MyTeamPage() {
         <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-4 flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
-              Selected Lineup
+              Active Captain ({SCORING_MULTIPLIERS.CAPTAIN_MULTIPLIER}x)
             </p>
-            <p className="text-xl font-black text-white mt-0.5">
-              {selectedPlayers.length}{' '}
-              <span className="text-xs font-semibold text-zinc-500">
-                / 5 Players
-              </span>
+            <p className="text-base font-black text-amber-400 mt-0.5 truncate">
+              {draftCaptainPlayer ? draftCaptainPlayer.name : 'None Selected'}
             </p>
           </div>
-          <Shield className="w-6 h-6 text-orange-500/60" />
+          <Crown className="w-6 h-6 text-amber-400/80" />
         </div>
 
         <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-4 flex items-center justify-between gap-2">
@@ -624,11 +725,14 @@ export default function MyTeamPage() {
       <div className="relative rounded-3xl border border-zinc-800 bg-gradient-to-b from-[#101624] via-[#0b0e17] to-[#090b10] p-6 sm:p-8 shadow-2xl overflow-hidden">
         <div className="text-center mb-6 space-y-1">
           <span className="text-[10px] font-extrabold uppercase tracking-widest text-orange-400 bg-orange-500/10 border border-orange-500/20 px-3 py-1 rounded-full">
-            Starting Formation (1 - 2 - 2)
+            Starting Formation (1 - 2 - 2) • Captain Earns{' '}
+            {SCORING_MULTIPLIERS.CAPTAIN_MULTIPLIER}x Points
           </span>
           <p className="text-xs text-zinc-400 pt-1">
-            Click any slot below to open the role-filtered player selector, then
-            click <strong className="text-white">Save Lineup</strong> when ready.
+            Click any slot to select a player, click{' '}
+            <strong className="text-amber-400">Make Capt</strong> on your star
+            carry, then click <strong className="text-white">Save Lineup</strong>
+            .
           </p>
         </div>
 
@@ -676,7 +780,6 @@ export default function MyTeamPage() {
             </p>
           </div>
 
-          {/* Filter Controls */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative">
               <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -748,7 +851,6 @@ export default function MyTeamPage() {
                 (p) => p.id === player.id
               );
               const currentTeamCount = teamCounts[player.team_id] ?? 0;
-              // If replacing a player currently in activeSlotKey from the same team, don't block
               const activeSlotPlayer = activeSlotKey
                 ? draftSlots[activeSlotKey]
                 : null;
@@ -819,7 +921,7 @@ export default function MyTeamPage() {
         )}
       </div>
 
-      {/* Sticky Bottom Budget & Manual Save Bar (Always Visible) */}
+      {/* Sticky Bottom Budget & Manual Save Bar */}
       <div className="fixed bottom-0 inset-x-0 z-30 border-t border-zinc-800 bg-[#0b0d13]/95 backdrop-blur-md shadow-2xl">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-6">
@@ -843,12 +945,14 @@ export default function MyTeamPage() {
 
             <div>
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
-                Draft Slots Filled
+                Draft Slots & Captain
               </span>
               <span className="text-sm sm:text-base font-black text-white">
                 {selectedPlayers.length} / 5{' '}
-                <span className="text-xs text-zinc-500 font-normal">
-                  (Max {maxPerTeam}/team)
+                <span className="text-xs text-amber-400 font-bold ml-1.5">
+                  {draftCaptainPlayer
+                    ? `(C: ${draftCaptainPlayer.name})`
+                    : '(Pick Captain)'}
                 </span>
               </span>
             </div>
@@ -879,7 +983,7 @@ export default function MyTeamPage() {
         </div>
       </div>
 
-      {/* Role-Filtered Quick Selection Modal when clicking a Pitch Slot */}
+      {/* Role-Filtered Quick Selection Modal */}
       {isRoleModalOpen && activeSlotKey && (
         <div
           onClick={() => setIsRoleModalOpen(false)}

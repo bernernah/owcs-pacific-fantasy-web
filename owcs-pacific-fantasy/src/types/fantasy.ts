@@ -45,11 +45,12 @@ export interface UserRoster {
   id: string;
   user_id: string;
   gameweek_id: string;
-  tank_id: string;
-  dps1_id: string;
-  dps2_id: string;
-  sup1_id: string;
-  sup2_id: string;
+  tank_id: string | null;
+  dps1_id: string | null;
+  dps2_id: string | null;
+  sup1_id: string | null;
+  sup2_id: string | null;
+  captain_id: string | null;
   points_earned: number;
   transfers_used: number;
   created_at: string;
