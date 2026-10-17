@@ -1,3 +1,4 @@
+import { connection } from 'next/server';
 import React from 'react';
 import Link from 'next/link';
 import {
@@ -26,8 +27,6 @@ import type {
   SnapshotPlayerItem,
 } from '@/types/fantasy';
 
-export const dynamic = 'force-dynamic';
-
 interface ProfilePageProps {
   params: Promise<{
     id: string;
@@ -35,6 +34,7 @@ interface ProfilePageProps {
 }
 
 export default async function ManagerProfilePage({ params }: ProfilePageProps) {
+  await connection();
   const { id: profileId } = await params;
   const supabase = await getSupabaseServerClient();
 
