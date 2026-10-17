@@ -18,7 +18,11 @@ async function AuthNavbar() {
   await connection(); 
   
   const profile = await getCurrentUserProfile();
-  return <Navbar profile={profile} />;
+  return (
+    <Suspense fallback={<div className="h-16 border-b border-zinc-800 bg-zinc-950" />}>
+      <Navbar profile={profile} />
+    </Suspense>
+  );
 }
 
 export default function RootLayout({
