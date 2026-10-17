@@ -250,7 +250,7 @@ export default function StatsDatabasePage() {
             <option value="ALL">All Season (Cumulative Totals)</option>
             {gameweeks.map((gw) => (
               <option key={gw.id} value={gw.id}>
-                GW{gw.number}: {gw.name}
+                Day {gw.number}: {gw.name}
               </option>
             ))}
           </select>

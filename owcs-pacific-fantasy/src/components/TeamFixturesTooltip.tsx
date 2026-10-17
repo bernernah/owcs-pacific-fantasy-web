@@ -88,7 +88,7 @@ export default function TeamFixturesTooltip({
                       </span>
                       {gwNum && (
                         <span className="ml-1.5 text-[10px] text-orange-400 font-bold">
-                          (GW{gwNum})
+                          (Day {gwNum})
                         </span>
                       )}
                     </div>

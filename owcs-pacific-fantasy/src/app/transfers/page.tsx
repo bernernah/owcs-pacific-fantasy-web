@@ -369,7 +369,7 @@ export default function TransfersPage() {
             <span className="text-white underline">
               100% Free and Unlimited
             </span>{' '}
-            until the Gameweek 1 Lock! Experiment with your roster with zero
+            until the Matchday 1 Lock! Experiment with your roster with zero
             point penalties.
           </p>
         </div>

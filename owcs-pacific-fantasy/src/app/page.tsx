@@ -2,22 +2,23 @@
 
 import React, { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Trophy,
   Search,
   Users,
-  X,
   Shield,
   ArrowUpDown,
   Crown,
-  DollarSign,
-  Zap,
   BookOpen,
-  Swords,
+  DollarSign,
+  Clock,
+  ArrowLeftRight,
+  ExternalLink,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, SCORING_MULTIPLIERS } from '@/lib/config';
-import RoleBadge from '@/components/RoleBadge';
+import DailyHub from '@/components/DailyHub';
 import type {
   Profile,
   Gameweek,
@@ -41,7 +42,11 @@ interface ManagerStandingRow {
 
 export default function LeaderboardPage() {
   const supabase = getSupabaseBrowserClient();
+  const router = useRouter();
 
+  const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(
+    null
+  );
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [gameweeks, setGameweeks] = useState<Gameweek[]>([]);
   const [rosters, setRosters] = useState<UserRoster[]>([]);
@@ -51,10 +56,6 @@ export default function LeaderboardPage() {
   const [selectedScope, setSelectedScope] = useState<string>('TOTAL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
-
-  const [inspectedRow, setInspectedRow] = useState<ManagerStandingRow | null>(
-    null
-  );
 
   useEffect(() => {
     async function fetchLeaderboardData() {
@@ -108,7 +109,14 @@ export default function LeaderboardPage() {
         supabase.from('players').select('*, teams(*)'),
       ]);
 
-      setProfiles((profData as Profile[]) ?? []);
+      const allProfiles = (profData as Profile[]) ?? [];
+      setProfiles(allProfiles);
+
+      if (user) {
+        const me = allProfiles.find((p) => p.id === user.id) ?? null;
+        setCurrentUserProfile(me);
+      }
+
       setGameweeks((gwData as Gameweek[]) ?? []);
       setRosters((rosterData as UserRoster[]) ?? []);
 
@@ -318,24 +326,52 @@ export default function LeaderboardPage() {
 
   const formatSignedStat = (val: number) => (val >= 0 ? `+${val}` : `${val}`);
 
+  const howToPlayCards = [
+    {
+      title: 'Draft your 5-player roster',
+      icon: Users,
+      description:
+        'Select 1 Tank, 2 DPS, and 2 Support players (max 2 per OWCS team in Regular Season) and assign your 1.5x Points Captain.',
+      badge: '1 - 2 - 2 Formation',
+    },
+    {
+      title: 'Manage your $10M Budget',
+      icon: DollarSign,
+      description: `Build within your $${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M salary cap, earn +$100k daily check-in bonuses, and grow your franchise value as player prices shift.`,
+      badge: 'Dynamic Valuation',
+    },
+    {
+      title: 'Rosters Lock Daily',
+      icon: Clock,
+      description:
+        'OWCS Pacific moves fast! Lineups lock automatically 15 minutes before each Matchday begins. Check the daily countdown before matches start.',
+      badge: 'Daily Matchdays',
+    },
+    {
+      title: 'Use your 1 Free Daily Transfer',
+      icon: ArrowLeftRight,
+      description: `Every Matchday grants ${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free Daily Transfer (3 in Playoffs) to swap out underperforming players without taking a -${FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS} pt hit.`,
+      badge: '1 Free / Day',
+    },
+  ];
+
   return (
     <div className="space-y-6">
       {/* ====================================================================
-          PRIZING, CAPTAIN MULTIPLIER & DYNAMIC SCORING RULES PANEL
+          HERO PRIZING & SCORING TELEMETRY BANNER
       ==================================================================== */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 1st Place $100 Prize & Captain Boost Card */}
-        <div className="lg:col-span-5 rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-500/15 via-[#0d1017] to-[#0d1017] p-6 shadow-xl flex flex-col justify-between space-y-4">
+        <div className="lg:col-span-5 rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl flex flex-col justify-between space-y-4">
           <div className="space-y-3">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-400/15 border border-amber-400/30 text-amber-300 text-[11px] font-black uppercase tracking-wider">
-              <Trophy className="w-3.5 h-3.5 text-amber-400" />
-              Official League Prizing
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[11px] font-black uppercase tracking-wider">
+              <Trophy className="w-3.5 h-3.5 text-emerald-400" />
+              OWCS Pacific Stage 2 • Official Prizing
             </div>
             <div className="flex items-baseline gap-3">
               <span className="text-4xl sm:text-5xl font-black text-white tracking-tight">
                 $100
               </span>
-              <span className="text-sm font-extrabold uppercase tracking-wider text-amber-400">
+              <span className="text-sm font-extrabold uppercase tracking-wider text-emerald-400">
                 1st Place Grand Prize
               </span>
             </div>
@@ -346,7 +382,7 @@ export default function LeaderboardPage() {
             </p>
           </div>
 
-          <div className="rounded-xl border border-zinc-800/90 bg-zinc-950/70 p-3.5 flex items-start gap-3">
+          <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3.5 flex items-start gap-3">
             <div className="p-2 rounded-lg bg-amber-400 text-zinc-950 shrink-0 mt-0.5">
               <Crown className="w-4 h-4 fill-zinc-950" />
             </div>
@@ -358,8 +394,7 @@ export default function LeaderboardPage() {
               <p className="text-[11px] text-zinc-400 mt-0.5 leading-relaxed">
                 Designate one of your 5 starters as your{' '}
                 <span className="text-amber-400 font-bold">Captain (C)</span> on
-                the My Team sheet. Your Captain&apos;s match points are
-                multiplied by{' '}
+                the My Team sheet to multiply their points by{' '}
                 <strong className="text-white">
                   {SCORING_MULTIPLIERS.CAPTAIN_MULTIPLIER}x
                 </strong>{' '}
@@ -369,23 +404,22 @@ export default function LeaderboardPage() {
           </div>
         </div>
 
-        {/* Dynamic Scoring Formula & Roster Rules Card (Imported from config.ts) */}
-        <div className="lg:col-span-7 rounded-2xl border border-zinc-800/90 bg-[#0d1017] p-6 shadow-xl flex flex-col justify-between space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-zinc-800/80 pb-3">
+        {/* Dynamic Scoring Formula Card */}
+        <div className="lg:col-span-7 rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl flex flex-col justify-between space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-zinc-800 pb-3">
             <div className="flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-orange-400" />
+              <BookOpen className="w-4 h-4 text-emerald-400" />
               <h2 className="text-sm font-black uppercase tracking-wider text-white">
-                Scoring Telemetry & Roster Rules
+                Live Scoring Telemetry
               </h2>
             </div>
             <span className="text-[11px] text-zinc-400 font-medium">
-              Scored per map played (Bo5 / Bo7)
+              Aggregated per map played (Bo5 / Bo7)
             </span>
           </div>
 
-          {/* 5 Dynamic Scoring Stat Pills from SCORING_MULTIPLIERS */}
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-center">
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
                 Per Kill (Elim)
               </span>
@@ -394,7 +428,7 @@ export default function LeaderboardPage() {
               </span>
             </div>
 
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-center">
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
                 Per Death
               </span>
@@ -403,56 +437,54 @@ export default function LeaderboardPage() {
               </span>
             </div>
 
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-center">
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
                 Per 1k Damage
               </span>
-              <span className="text-base font-black text-sky-400 font-mono mt-1 block">
+              <span className="text-base font-black text-emerald-400 font-mono mt-1 block">
                 {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_1K_DAMAGE)} pt
               </span>
             </div>
 
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-center">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-center">
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
                 Per 1k Healing
               </span>
-              <span className="text-base font-black text-teal-400 font-mono mt-1 block">
+              <span className="text-base font-black text-emerald-400 font-mono mt-1 block">
                 {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_1K_HEALING)}{' '}
                 pts
               </span>
             </div>
 
-            <div className="col-span-2 sm:col-span-1 rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-center">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-orange-300 block">
+            <div className="col-span-2 sm:col-span-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-center">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300 block">
                 Map Win Bonus
               </span>
-              <span className="text-base font-black text-orange-400 font-mono mt-1 block">
+              <span className="text-base font-black text-emerald-400 font-mono mt-1 block">
                 {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_MAP_WIN)} pts
               </span>
             </div>
           </div>
 
-          {/* Roster & Transfer Rules Summary from FANTASY_CONFIG */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-xs">
-            <div className="rounded-lg bg-zinc-900/40 border border-zinc-800/80 px-3 py-2 flex items-center justify-between">
-              <span className="text-zinc-400">Salary Cap:</span>
-              <strong className="text-white font-mono">
-                ${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M ($
-                {FANTASY_CONFIG.PLAYOFF_WILDCARD_BUDGET}M Playoffs)
+            <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 px-3 py-2 flex items-center justify-between">
+              <span className="text-zinc-400">Starting Cap:</span>
+              <strong className="text-emerald-400 font-mono">
+                ${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M (+$5M Playoffs)
               </strong>
             </div>
-            <div className="rounded-lg bg-zinc-900/40 border border-zinc-800/80 px-3 py-2 flex items-center justify-between">
+            <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 px-3 py-2 flex items-center justify-between">
               <span className="text-zinc-400">Team Limit:</span>
               <strong className="text-white font-mono">
                 Max {FANTASY_CONFIG.REGULAR_SEASON_MAX_PER_TEAM}/team (
                 {FANTASY_CONFIG.PLAYOFF_WILDCARD_MAX_PER_TEAM} Playoffs)
               </strong>
             </div>
-            <div className="rounded-lg bg-zinc-900/40 border border-zinc-800/80 px-3 py-2 flex items-center justify-between">
+            <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 px-3 py-2 flex items-center justify-between">
               <span className="text-zinc-400">Extra Transfer:</span>
               <strong className="text-rose-400 font-mono">
                 -{FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS} pts (
-                {FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free/GW)
+                {FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free/Day)
               </strong>
             </div>
           </div>
@@ -460,36 +492,104 @@ export default function LeaderboardPage() {
       </div>
 
       {/* ====================================================================
-          MAIN OWTV-STYLE GLOBAL LEADERBOARD
+          STEP 3: RULES & HOW TO PLAY (4-CARD MECHANICS GRID)
       ==================================================================== */}
-      <div className="rounded-2xl border border-zinc-800/90 bg-[#0d1017] p-6 sm:p-8 shadow-2xl space-y-6">
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 space-y-5 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-800 pb-4">
+          <div>
+            <span className="text-[11px] font-black uppercase tracking-wider text-emerald-400">
+              Quick-Start Guide
+            </span>
+            <h2 className="text-lg sm:text-xl font-black text-white">
+              Rules &amp; How to Play
+            </h2>
+          </div>
+          <Link
+            href="/my-team"
+            className="text-xs font-extrabold text-emerald-400 hover:underline"
+          >
+            Build Your Day 1 Lineup →
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {howToPlayCards.map((card, idx) => {
+            const Icon = card.icon;
+            return (
+              <div
+                key={card.title}
+                className="rounded-xl border border-zinc-800 bg-zinc-950/80 p-5 flex flex-col justify-between space-y-4 hover:border-emerald-500/40 transition-colors"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                      0{idx + 1} • {card.badge}
+                    </span>
+                    <Icon className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <h3 className="text-sm font-black text-white">
+                    {card.title}
+                  </h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    {card.description}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* ====================================================================
+          STEP 4: DAILY ENGAGEMENT LOOP & TRANSFER REMINDERS
+      ==================================================================== */}
+      <DailyHub
+        profile={currentUserProfile}
+        onBonusClaimed={(newBudget, newStreak) => {
+          setCurrentUserProfile((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  personal_budget: newBudget,
+                  daily_streak: newStreak,
+                  last_daily_claim: new Date().toISOString(),
+                }
+              : null
+          );
+        }}
+      />
+
+      {/* ====================================================================
+          STEP 2 & STEP 5: GLOBAL LEADERBOARD WITH "DAY X" TABS & PROFILE LINKS
+      ==================================================================== */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 sm:p-8 shadow-2xl space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
               Global Leaderboard
             </h1>
             <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-              Current standings for OWCS Pacific Stage 2026 • All rosters are
-              public
+              Click any manager row or name to inspect their full Matchday
+              history &amp; Trophy Cabinet
             </p>
           </div>
 
           <Link
             href="/my-team"
-            className="self-start sm:self-auto bg-orange-500 hover:bg-orange-400 text-zinc-950 font-black text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all shadow-lg shadow-orange-500/20"
+            className="self-start sm:self-auto bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all shadow-lg shadow-emerald-500/20"
           >
             Edit My Lineup
           </Link>
         </div>
 
-        {/* OWTV Week Filter Tabs */}
-        <div className="inline-flex flex-wrap items-center gap-1 rounded-xl bg-[#080a0f] p-1.5 border border-zinc-800/80">
+        {/* Matchday Filter Tabs ("Total | Day 1 | Day 2 | ...") */}
+        <div className="inline-flex flex-wrap items-center gap-1 rounded-xl bg-zinc-950 p-1.5 border border-zinc-800">
           <button
             type="button"
             onClick={() => setSelectedScope('TOTAL')}
             className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
               selectedScope === 'TOTAL'
-                ? 'bg-zinc-800 text-white shadow'
+                ? 'bg-zinc-800 text-emerald-400 shadow'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
@@ -502,11 +602,11 @@ export default function LeaderboardPage() {
               onClick={() => setSelectedScope(gw.id)}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
                 selectedScope === gw.id
-                  ? 'bg-zinc-800 text-white shadow'
+                  ? 'bg-zinc-800 text-emerald-400 shadow'
                   : 'text-zinc-400 hover:text-zinc-200'
               }`}
             >
-              {gw.is_playoffs ? 'Playoffs' : `Week ${gw.number}`}
+              {gw.is_playoffs ? 'Playoffs' : `Day ${gw.number}`}
             </button>
           ))}
         </div>
@@ -520,7 +620,7 @@ export default function LeaderboardPage() {
               placeholder="Search for a manager or player..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-[#080a0f] border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-zinc-600"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-emerald-500"
             />
           </div>
 
@@ -534,7 +634,7 @@ export default function LeaderboardPage() {
           </div>
         </div>
 
-        {/* OWTV Standings Table */}
+        {/* Standings Table with Direct /profile/[id] Routing */}
         {loading ? (
           <div className="py-16 text-center text-sm text-zinc-400">
             Loading Global Leaderboard...
@@ -554,7 +654,7 @@ export default function LeaderboardPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse min-w-[880px]">
               <thead>
-                <tr className="border-b border-zinc-800/90 text-xs font-bold text-zinc-300">
+                <tr className="border-b border-zinc-800 text-xs font-bold text-zinc-300">
                   <th className="py-3.5 px-4 w-24">Rank</th>
                   <th className="py-3.5 px-4">Manager</th>
                   <th className="py-3.5 px-4 text-center">Tank</th>
@@ -564,7 +664,7 @@ export default function LeaderboardPage() {
                   <th className="py-3.5 px-4 text-center">Support</th>
                   <th
                     onClick={() => setSortAsc(!sortAsc)}
-                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white select-none"
+                    className="py-3.5 px-4 text-right cursor-pointer hover:text-emerald-400 select-none"
                   >
                     <span className="inline-flex items-center justify-end gap-1">
                       Total Score
@@ -577,20 +677,24 @@ export default function LeaderboardPage() {
                 {leaderboardRows.map((row) => (
                   <tr
                     key={row.profile.id}
-                    onClick={() => setInspectedRow(row)}
-                    className="group cursor-pointer hover:bg-zinc-800/30 transition-colors"
+                    onClick={() => router.push(`/profile/${row.profile.id}`)}
+                    className="group cursor-pointer hover:bg-zinc-800/50 transition-colors"
                   >
                     <td className="py-3.5 px-4 whitespace-nowrap">
                       {renderRankCell(row.rank)}
                     </td>
 
                     <td className="py-3.5 px-4 whitespace-nowrap">
-                      <div className="flex items-center gap-3">
+                      <Link
+                        href={`/profile/${row.profile.id}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-3 group/link"
+                      >
                         {row.profile.avatar_url ? (
                           <img
                             src={row.profile.avatar_url}
                             alt={row.profile.username}
-                            className="w-8 h-8 rounded-full object-cover ring-1 ring-zinc-700 shrink-0"
+                            className="w-8 h-8 rounded-full object-cover ring-1 ring-zinc-700 group-hover:ring-emerald-400 shrink-0 transition-all"
                           />
                         ) : (
                           <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-200 flex items-center justify-center font-bold text-xs shrink-0">
@@ -598,14 +702,15 @@ export default function LeaderboardPage() {
                           </div>
                         )}
                         <div className="min-w-0">
-                          <p className="font-bold text-white text-xs sm:text-sm truncate group-hover:text-orange-400 transition-colors">
-                            {row.profile.username}&apos;s Team
+                          <p className="font-bold text-white text-xs sm:text-sm truncate group-hover:text-emerald-400 group-hover/link:text-emerald-400 transition-colors inline-flex items-center gap-1.5">
+                            <span>{row.profile.username}&apos;s Team</span>
+                            <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-100 text-emerald-400 transition-opacity" />
                           </p>
-                          <p className="text-[11px] text-zinc-500 truncate">
-                            {row.profile.username}
+                          <p className="text-[11px] text-zinc-500 truncate block">
+                            @{row.profile.username}
                           </p>
                         </div>
-                      </div>
+                      </Link>
                     </td>
 
                     <td className="py-3.5 px-4 text-center whitespace-nowrap">
@@ -628,7 +733,7 @@ export default function LeaderboardPage() {
                       {renderPlayerSlotCell(row.sup2, row.captainId)}
                     </td>
 
-                    <td className="py-3.5 px-4 text-right whitespace-nowrap font-mono font-bold text-white">
+                    <td className="py-3.5 px-4 text-right whitespace-nowrap font-mono font-bold text-white group-hover:text-emerald-400 transition-colors">
                       {row.totalScore % 1 === 0
                         ? row.totalScore.toFixed(0)
                         : row.totalScore.toFixed(1)}{' '}
@@ -643,143 +748,6 @@ export default function LeaderboardPage() {
           </div>
         )}
       </div>
-
-      {/* Manager Roster Detail Modal on Row Click */}
-      {inspectedRow && (
-        <div
-          onClick={() => setInspectedRow(null)}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-2xl rounded-2xl border border-zinc-800 bg-[#0d1018] p-6 shadow-2xl space-y-5"
-          >
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
-              <div className="flex items-center gap-3">
-                {inspectedRow.profile.avatar_url ? (
-                  <img
-                    src={inspectedRow.profile.avatar_url}
-                    alt={inspectedRow.profile.username}
-                    className="w-10 h-10 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-10 h-10 rounded-full bg-zinc-800 text-white flex items-center justify-center font-bold text-sm">
-                    {inspectedRow.profile.username.slice(0, 2).toUpperCase()}
-                  </div>
-                )}
-                <div>
-                  <h3 className="text-lg font-black text-white">
-                    {inspectedRow.profile.username}&apos;s Starting Lineup
-                  </h3>
-                  <p className="text-xs text-zinc-400">
-                    Rank {formatOrdinal(inspectedRow.rank)} • Budget Used:{' '}
-                    <span className="text-emerald-400 font-bold">
-                      ${inspectedRow.totalBudgetUsed.toFixed(1)}M
-                    </span>{' '}
-                    • Score:{' '}
-                    <span className="text-orange-400 font-bold">
-                      {inspectedRow.totalScore} pts
-                    </span>
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setInspectedRow(null)}
-                className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {!inspectedRow.activeRoster ? (
-              <div className="py-10 text-center bg-zinc-900/40 rounded-xl border border-zinc-800/80">
-                <Shield className="w-8 h-8 text-zinc-600 mx-auto mb-2" />
-                <p className="text-sm font-bold text-zinc-300">
-                  {inspectedRow.profile.username} has not locked in a starting 5
-                  yet.
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
-                {[
-                  {
-                    label: 'TANK',
-                    role: 'TANK' as const,
-                    player: inspectedRow.tank,
-                  },
-                  {
-                    label: 'DPS 1',
-                    role: 'DPS' as const,
-                    player: inspectedRow.dps1,
-                  },
-                  {
-                    label: 'DPS 2',
-                    role: 'DPS' as const,
-                    player: inspectedRow.dps2,
-                  },
-                  {
-                    label: 'SUPPORT 1',
-                    role: 'SUPPORT' as const,
-                    player: inspectedRow.sup1,
-                  },
-                  {
-                    label: 'SUPPORT 2',
-                    role: 'SUPPORT' as const,
-                    player: inspectedRow.sup2,
-                  },
-                ].map((slot) => {
-                  const isCapt =
-                    Boolean(slot.player) &&
-                    slot.player?.id === inspectedRow.captainId;
-
-                  return (
-                    <div
-                      key={slot.label}
-                      className={`rounded-xl border p-3.5 flex flex-col justify-between ${
-                        isCapt
-                          ? 'border-amber-400 bg-amber-500/10'
-                          : 'border-zinc-800 bg-zinc-900/70'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <RoleBadge role={slot.role} size="sm" />
-                          {isCapt ? (
-                            <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-400 text-zinc-950">
-                              C • {SCORING_MULTIPLIERS.CAPTAIN_MULTIPLIER}x
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
-                              {slot.player?.teams?.code ?? 'OWCS'}
-                            </span>
-                          )}
-                        </div>
-                        <p className="font-extrabold text-white text-sm truncate">
-                          {slot.player?.name ?? 'Empty'}
-                        </p>
-                        <p className="text-[11px] text-zinc-400 truncate">
-                          {slot.player?.teams?.name ?? '—'}
-                        </p>
-                      </div>
-                      <div className="mt-3 pt-2 border-t border-zinc-800/80 flex items-center justify-between text-xs">
-                        <span className="text-zinc-500">Price</span>
-                        <span className="font-bold text-emerald-400">
-                          $
-                          {slot.player
-                            ? Number(slot.player.price).toFixed(1)
-                            : '0.0'}
-                          M
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

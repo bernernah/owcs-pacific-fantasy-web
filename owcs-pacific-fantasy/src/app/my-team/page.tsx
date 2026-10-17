@@ -631,7 +631,7 @@ export default function MyTeamPage() {
               Active Stage
             </p>
             <p className="text-base font-black text-white mt-0.5">
-              {activeGw ? `GW${activeGw.number}` : 'GW1'}
+              {activeGw ? `Day ${activeGw.number}` : 'Day 1'}
             </p>
           </div>
           {isLocked ? (

@@ -120,6 +120,8 @@ export interface Profile {
   avatar_url: string | null;
   is_admin: boolean;
   personal_budget: number;
+  last_daily_claim: string | null;
+  daily_streak: number;
   created_at: string;
 }
 
