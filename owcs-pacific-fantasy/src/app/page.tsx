@@ -1,13 +1,12 @@
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { Suspense, useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import {
   Trophy,
   Search,
   Users,
-  Shield,
   ArrowUpDown,
   Crown,
   BookOpen,
@@ -15,6 +14,8 @@ import {
   Clock,
   ArrowLeftRight,
   ExternalLink,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, SCORING_MULTIPLIERS } from '@/lib/config';
@@ -24,32 +25,48 @@ import type {
   Gameweek,
   Player,
   UserRoster,
+  LeaderboardRow,
 } from '@/types/fantasy';
 
-interface ManagerStandingRow {
+const PAGE_SIZE = 10;
+
+interface PaginatedStandingRow {
   rank: number;
-  profile: Profile;
-  activeRoster: UserRoster | null;
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
   tank: Player | null;
   dps1: Player | null;
   dps2: Player | null;
   sup1: Player | null;
   sup2: Player | null;
   captainId: string | null;
-  totalBudgetUsed: number;
   totalScore: number;
 }
 
-export default function LeaderboardPage() {
+function LeaderboardContent() {
   const supabase = getSupabaseBrowserClient();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // Read current ?page= parameter from URL (defaults to 1)
+  const rawPageParam = Number(searchParams.get('page') ?? '1');
+  const currentPage =
+    Number.isFinite(rawPageParam) && rawPageParam >= 1
+      ? Math.floor(rawPageParam)
+      : 1;
 
   const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(
     null
   );
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [pageLeaderboardRows, setPageLeaderboardRows] = useState<
+    LeaderboardRow[]
+  >([]);
+  const [totalManagersCount, setTotalManagersCount] = useState<number>(0);
+
   const [gameweeks, setGameweeks] = useState<Gameweek[]>([]);
-  const [rosters, setRosters] = useState<UserRoster[]>([]);
+  const [pageRosters, setPageRosters] = useState<UserRoster[]>([]);
   const [playersById, setPlayersById] = useState<Record<string, Player>>({});
   const [loading, setLoading] = useState<boolean>(true);
 
@@ -57,10 +74,9 @@ export default function LeaderboardPage() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
 
+  // 1. Load static reference data (Current Auth User, Matchdays & Players) once
   useEffect(() => {
-    async function fetchLeaderboardData() {
-      setLoading(true);
-
+    async function loadReferenceData() {
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -77,48 +93,34 @@ export default function LeaderboardPage() {
           `Manager_${user.id.slice(0, 6)}`;
         const avatarUrl = user.user_metadata?.avatar_url || null;
 
-        await supabase.from('profiles').upsert(
-          {
-            id: user.id,
-            discord_id: String(discordId),
-            username: String(username),
-            avatar_url: avatarUrl,
-          },
-          { onConflict: 'id' }
-        );
+        const { data: upsertedProfile } = await supabase
+          .from('profiles')
+          .upsert(
+            {
+              id: user.id,
+              discord_id: String(discordId),
+              username: String(username),
+              avatar_url: avatarUrl,
+            },
+            { onConflict: 'id' }
+          )
+          .select('*')
+          .maybeSingle();
+
+        if (upsertedProfile) {
+          setCurrentUserProfile(upsertedProfile as Profile);
+        }
       }
 
-      const [
-        { data: profData },
-        { data: gwData },
-        { data: rosterData },
-        { data: playerData },
-      ] = await Promise.all([
-        supabase
-          .from('profiles')
-          .select('*')
-          .order('created_at', { ascending: true }),
+      const [{ data: gwData }, { data: playerData }] = await Promise.all([
         supabase
           .from('gameweeks')
           .select('*')
           .order('number', { ascending: true }),
-        supabase
-          .from('user_rosters')
-          .select('*')
-          .order('updated_at', { ascending: false }),
         supabase.from('players').select('*, teams(*)'),
       ]);
 
-      const allProfiles = (profData as Profile[]) ?? [];
-      setProfiles(allProfiles);
-
-      if (user) {
-        const me = allProfiles.find((p) => p.id === user.id) ?? null;
-        setCurrentUserProfile(me);
-      }
-
       setGameweeks((gwData as Gameweek[]) ?? []);
-      setRosters((rosterData as UserRoster[]) ?? []);
 
       const map: Record<string, Player> = {};
       if (playerData) {
@@ -127,11 +129,62 @@ export default function LeaderboardPage() {
         }
       }
       setPlayersById(map);
+    }
+
+    loadReferenceData();
+  }, [supabase]);
+
+  // 2. Fetch Paginated Leaderboard Slice (10 rows per page via .range()) & Total Count
+  useEffect(() => {
+    async function fetchPaginatedStandings() {
+      setLoading(true);
+
+      const from = (currentPage - 1) * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+
+      let query = supabase
+        .from('leaderboard_view')
+        .select('*', { count: 'exact' })
+        .order('total_points', { ascending: sortAsc })
+        .order('username', { ascending: true });
+
+      if (searchQuery.trim()) {
+        query = query.ilike('username', `%${searchQuery.trim()}%`);
+      }
+
+      const { data: lbData, count } = await query.range(from, to);
+
+      const rows = (lbData as LeaderboardRow[]) ?? [];
+      setPageLeaderboardRows(rows);
+      setTotalManagersCount(count ?? 0);
+
+      if (rows.length > 0) {
+        const userIdsOnPage = rows.map((r) => r.user_id);
+        const { data: rosterData } = await supabase
+          .from('user_rosters')
+          .select('*')
+          .in('user_id', userIdsOnPage)
+          .order('updated_at', { ascending: false });
+
+        setPageRosters((rosterData as UserRoster[]) ?? []);
+      } else {
+        setPageRosters([]);
+      }
+
       setLoading(false);
     }
 
-    fetchLeaderboardData();
-  }, [supabase]);
+    fetchPaginatedStandings();
+  }, [supabase, currentPage, sortAsc, searchQuery]);
+
+  const totalPages = Math.max(1, Math.ceil(totalManagersCount / PAGE_SIZE));
+
+  const navigateToPage = (targetPage: number) => {
+    const safePage = Math.max(1, Math.min(totalPages, targetPage));
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('page', String(safePage));
+    router.push(`${pathname}?${params.toString()}`, { scroll: false });
+  };
 
   const activeOrLatestGwId = useMemo(() => {
     if (gameweeks.length === 0) return null;
@@ -142,123 +195,81 @@ export default function LeaderboardPage() {
     return active?.id ?? null;
   }, [gameweeks]);
 
-  const leaderboardRows = useMemo(() => {
+  // Combine the 10 paginated leaderboard rows with their active 5-player lineups
+  const displayedRows = useMemo<PaginatedStandingRow[]>(() => {
     const gwNumberById: Record<string, number> = {};
     for (const gw of gameweeks) {
       gwNumberById[gw.id] = gw.number;
     }
 
-    const computed: Omit<ManagerStandingRow, 'rank'>[] = profiles.map(
-      (profile) => {
-        const userRosters = rosters.filter((r) => r.user_id === profile.id);
-
-        const sortedUserRosters = [...userRosters].sort(
-          (a, b) =>
-            (gwNumberById[b.gameweek_id] ?? 0) -
-            (gwNumberById[a.gameweek_id] ?? 0)
-        );
-
-        let displayedRoster: UserRoster | null = null;
-        let score = 0;
-
-        if (selectedScope === 'TOTAL') {
-          score = userRosters.reduce(
-            (sum, r) => sum + Number(r.points_earned ?? 0),
-            0
-          );
-          displayedRoster =
-            userRosters.find((r) => r.gameweek_id === activeOrLatestGwId) ??
-            sortedUserRosters[0] ??
-            null;
-        } else {
-          const gwRoster =
-            userRosters.find((r) => r.gameweek_id === selectedScope) ?? null;
-          displayedRoster = gwRoster;
-          score = gwRoster ? Number(gwRoster.points_earned ?? 0) : 0;
-        }
-
-        const tank =
-          displayedRoster && displayedRoster.tank_id
-            ? playersById[displayedRoster.tank_id] ?? null
-            : null;
-        const dps1 =
-          displayedRoster && displayedRoster.dps1_id
-            ? playersById[displayedRoster.dps1_id] ?? null
-            : null;
-        const dps2 =
-          displayedRoster && displayedRoster.dps2_id
-            ? playersById[displayedRoster.dps2_id] ?? null
-            : null;
-        const sup1 =
-          displayedRoster && displayedRoster.sup1_id
-            ? playersById[displayedRoster.sup1_id] ?? null
-            : null;
-        const sup2 =
-          displayedRoster && displayedRoster.sup2_id
-            ? playersById[displayedRoster.sup2_id] ?? null
-            : null;
-
-        const totalBudgetUsed = [tank, dps1, dps2, sup1, sup2].reduce(
-          (sum, p) => sum + (p ? Number(p.price) : 0),
-          0
-        );
-
-        return {
-          profile,
-          activeRoster: displayedRoster,
-          tank,
-          dps1,
-          dps2,
-          sup1,
-          sup2,
-          captainId: displayedRoster?.captain_id ?? null,
-          totalBudgetUsed,
-          totalScore: Number(score.toFixed(1)),
-        };
-      }
-    );
-
-    computed.sort((a, b) => {
-      if (b.totalScore !== a.totalScore) {
-        return sortAsc
-          ? a.totalScore - b.totalScore
-          : b.totalScore - a.totalScore;
-      }
-      return a.profile.username.localeCompare(b.profile.username);
-    });
-
-    const ranked: ManagerStandingRow[] = [];
-    for (let i = 0; i < computed.length; i++) {
-      const current = computed[i];
-      let rank = i + 1;
-      if (i > 0 && current.totalScore === computed[i - 1].totalScore) {
-        rank = ranked[i - 1].rank;
-      }
-      ranked.push({
-        ...current,
-        rank,
-      });
-    }
-
-    if (!searchQuery.trim()) return ranked;
-    const q = searchQuery.toLowerCase();
-
-    return ranked.filter((row) => {
-      const inManager = row.profile.username.toLowerCase().includes(q);
-      const inPlayers = [row.tank, row.dps1, row.dps2, row.sup1, row.sup2].some(
-        (p) => p?.name.toLowerCase().includes(q)
+    return pageLeaderboardRows.map((lbRow) => {
+      const userRosters = pageRosters.filter(
+        (r) => r.user_id === lbRow.user_id
       );
-      return inManager || inPlayers;
+
+      const sortedUserRosters = [...userRosters].sort(
+        (a, b) =>
+          (gwNumberById[b.gameweek_id] ?? 0) -
+          (gwNumberById[a.gameweek_id] ?? 0)
+      );
+
+      let displayedRoster: UserRoster | null = null;
+      let score = Number(lbRow.total_points ?? 0);
+
+      if (selectedScope === 'TOTAL') {
+        displayedRoster =
+          userRosters.find((r) => r.gameweek_id === activeOrLatestGwId) ??
+          sortedUserRosters[0] ??
+          null;
+      } else {
+        const gwRoster =
+          userRosters.find((r) => r.gameweek_id === selectedScope) ?? null;
+        displayedRoster = gwRoster;
+        score = gwRoster ? Number(gwRoster.points_earned ?? 0) : 0;
+      }
+
+      const tank =
+        displayedRoster && displayedRoster.tank_id
+          ? playersById[displayedRoster.tank_id] ?? null
+          : null;
+      const dps1 =
+        displayedRoster && displayedRoster.dps1_id
+          ? playersById[displayedRoster.dps1_id] ?? null
+          : null;
+      const dps2 =
+        displayedRoster && displayedRoster.dps2_id
+          ? playersById[displayedRoster.dps2_id] ?? null
+          : null;
+      const sup1 =
+        displayedRoster && displayedRoster.sup1_id
+          ? playersById[displayedRoster.sup1_id] ?? null
+          : null;
+      const sup2 =
+        displayedRoster && displayedRoster.sup2_id
+          ? playersById[displayedRoster.sup2_id] ?? null
+          : null;
+
+      return {
+        rank: Number(lbRow.rank),
+        userId: lbRow.user_id,
+        username: lbRow.username,
+        avatarUrl: lbRow.avatar_url,
+        tank,
+        dps1,
+        dps2,
+        sup1,
+        sup2,
+        captainId: displayedRoster?.captain_id ?? null,
+        totalScore: Number(score.toFixed(1)),
+      };
     });
   }, [
-    profiles,
-    rosters,
+    pageLeaderboardRows,
+    pageRosters,
     playersById,
     gameweeks,
     selectedScope,
     activeOrLatestGwId,
-    searchQuery,
-    sortAsc,
   ]);
 
   const formatOrdinal = (n: number) => {
@@ -335,9 +346,9 @@ export default function LeaderboardPage() {
       badge: '1 - 2 - 2 Formation',
     },
     {
-      title: 'Manage your $10M Budget',
+      title: 'Manage your $100M Budget',
       icon: DollarSign,
-      description: `Build within your $${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M salary cap, earn +$100k daily check-in bonuses, and grow your franchise value as player prices shift.`,
+      description: `Build within your $${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M starting salary cap and grow your franchise value as player prices shift based on Matchday performance.`,
       badge: 'Dynamic Valuation',
     },
     {
@@ -354,6 +365,10 @@ export default function LeaderboardPage() {
       badge: '1 Free / Day',
     },
   ];
+
+  const showingFrom =
+    totalManagersCount === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const showingTo = Math.min(currentPage * PAGE_SIZE, totalManagersCount);
 
   return (
     <div className="space-y-6">
@@ -492,7 +507,7 @@ export default function LeaderboardPage() {
       </div>
 
       {/* ====================================================================
-          STEP 3: RULES & HOW TO PLAY (4-CARD MECHANICS GRID)
+          RULES & HOW TO PLAY (4-CARD MECHANICS GRID)
       ==================================================================== */}
       <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 space-y-5 shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-800 pb-4">
@@ -541,16 +556,15 @@ export default function LeaderboardPage() {
       </section>
 
       {/* ====================================================================
-          STEP 4: DAILY ENGAGEMENT LOOP & TRANSFER REMINDERS
+          DAILY CHECK-IN STREAK & TRANSFER REMINDER HUB
       ==================================================================== */}
       <DailyHub
         profile={currentUserProfile}
-        onBonusClaimed={(newBudget, newStreak) => {
+        onBonusClaimed={(newStreak) => {
           setCurrentUserProfile((prev) =>
             prev
               ? {
                   ...prev,
-                  personal_budget: newBudget,
                   daily_streak: newStreak,
                   last_daily_claim: new Date().toISOString(),
                 }
@@ -560,7 +574,7 @@ export default function LeaderboardPage() {
       />
 
       {/* ====================================================================
-          STEP 2 & STEP 5: GLOBAL LEADERBOARD WITH "DAY X" TABS & PROFILE LINKS
+          PAGINATED GLOBAL LEADERBOARD (10 MANAGERS PER PAGE)
       ==================================================================== */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 sm:p-8 shadow-2xl space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -617,9 +631,14 @@ export default function LeaderboardPage() {
             <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Search for a manager or player..."
+              placeholder="Search for a manager..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                if (currentPage !== 1) {
+                  navigateToPage(1);
+                }
+              }}
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-emerald-500"
             />
           </div>
@@ -627,19 +646,22 @@ export default function LeaderboardPage() {
           <div className="text-xs font-medium text-zinc-400">
             Showing{' '}
             <span className="text-zinc-200 font-bold">
-              {leaderboardRows.length}
+              {showingFrom}–{showingTo}
             </span>{' '}
-            of <span className="text-zinc-200 font-bold">{profiles.length}</span>{' '}
+            of{' '}
+            <span className="text-zinc-200 font-bold">
+              {totalManagersCount}
+            </span>{' '}
             participants total
           </div>
         </div>
 
-        {/* Standings Table with Direct /profile/[id] Routing */}
+        {/* Standings Table */}
         {loading ? (
           <div className="py-16 text-center text-sm text-zinc-400">
             Loading Global Leaderboard...
           </div>
-        ) : leaderboardRows.length === 0 ? (
+        ) : displayedRows.length === 0 ? (
           <div className="py-16 text-center space-y-3 border border-dashed border-zinc-800 rounded-2xl">
             <Users className="w-10 h-10 text-zinc-600 mx-auto" />
             <p className="text-zinc-300 font-bold text-sm">
@@ -674,10 +696,10 @@ export default function LeaderboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/60 text-sm">
-                {leaderboardRows.map((row) => (
+                {displayedRows.map((row) => (
                   <tr
-                    key={row.profile.id}
-                    onClick={() => router.push(`/profile/${row.profile.id}`)}
+                    key={row.userId}
+                    onClick={() => router.push(`/profile/${row.userId}`)}
                     className="group cursor-pointer hover:bg-zinc-800/50 transition-colors"
                   >
                     <td className="py-3.5 px-4 whitespace-nowrap">
@@ -686,28 +708,28 @@ export default function LeaderboardPage() {
 
                     <td className="py-3.5 px-4 whitespace-nowrap">
                       <Link
-                        href={`/profile/${row.profile.id}`}
+                        href={`/profile/${row.userId}`}
                         onClick={(e) => e.stopPropagation()}
                         className="flex items-center gap-3 group/link"
                       >
-                        {row.profile.avatar_url ? (
+                        {row.avatarUrl ? (
                           <img
-                            src={row.profile.avatar_url}
-                            alt={row.profile.username}
+                            src={row.avatarUrl}
+                            alt={row.username}
                             className="w-8 h-8 rounded-full object-cover ring-1 ring-zinc-700 group-hover:ring-emerald-400 shrink-0 transition-all"
                           />
                         ) : (
                           <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-200 flex items-center justify-center font-bold text-xs shrink-0">
-                            {row.profile.username.slice(0, 2).toUpperCase()}
+                            {row.username.slice(0, 2).toUpperCase()}
                           </div>
                         )}
                         <div className="min-w-0">
                           <p className="font-bold text-white text-xs sm:text-sm truncate group-hover:text-emerald-400 group-hover/link:text-emerald-400 transition-colors inline-flex items-center gap-1.5">
-                            <span>{row.profile.username}&apos;s Team</span>
+                            <span>{row.username}&apos;s Team</span>
                             <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-100 text-emerald-400 transition-opacity" />
                           </p>
                           <p className="text-[11px] text-zinc-500 truncate block">
-                            @{row.profile.username}
+                            @{row.username}
                           </p>
                         </div>
                       </Link>
@@ -747,7 +769,55 @@ export default function LeaderboardPage() {
             </table>
           </div>
         )}
+
+        {/* Pagination Controls Bar */}
+        <div className="pt-4 border-t border-zinc-800 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <span className="text-xs font-bold text-zinc-400">
+            Page <span className="text-white">{currentPage}</span> of{' '}
+            <span className="text-white">{totalPages}</span>
+          </span>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigateToPage(currentPage - 1)}
+              disabled={currentPage <= 1 || loading}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-zinc-800 bg-zinc-950 hover:bg-zinc-800 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4 text-emerald-400" />
+              Previous
+            </button>
+
+            <span className="px-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono font-black text-emerald-400">
+              {currentPage}
+            </span>
+
+            <button
+              type="button"
+              onClick={() => navigateToPage(currentPage + 1)}
+              disabled={currentPage >= totalPages || loading}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-zinc-800 bg-zinc-950 hover:bg-zinc-800 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            >
+              Next
+              <ChevronRight className="w-4 h-4 text-emerald-400" />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
+  );
+}
+
+export default function LeaderboardPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="py-20 text-center text-sm text-zinc-400">
+          Loading OWCS Pacific Leaderboard...
+        </div>
+      }
+    >
+      <LeaderboardContent />
+    </Suspense>
   );
 }

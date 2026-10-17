@@ -5,7 +5,7 @@ import Link from 'next/link';
 import {
   BellRing,
   Flame,
-  Gift,
+  CalendarCheck,
   ArrowLeftRight,
   CheckCircle2,
   AlertCircle,
@@ -15,16 +15,13 @@ import type { Profile } from '@/types/fantasy';
 
 interface DailyHubProps {
   profile: Profile | null;
-  onBonusClaimed?: (newBudget: number, newStreak: number) => void;
+  onBonusClaimed?: (newStreak: number) => void;
 }
 
 export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
   const [isPending, startTransition] = useTransition();
   const [claimedToday, setClaimedToday] = useState<boolean>(false);
   const [streak, setStreak] = useState<number>(profile?.daily_streak ?? 0);
-  const [budget, setBudget] = useState<number>(
-    Number(profile?.personal_budget ?? 100.0)
-  );
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error';
     text: string;
@@ -33,14 +30,12 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
   useEffect(() => {
     if (!profile) return;
     setStreak(profile.daily_streak ?? 0);
-    setBudget(Number(profile.personal_budget ?? 100.0));
 
     if (!profile.last_daily_claim) {
       setClaimedToday(false);
       return;
     }
 
-    // Compare dates in Australia/Perth (AWST / SGT UTC+8) to match the database check
     const fmt = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Australia/Perth',
       year: 'numeric',
@@ -59,18 +54,13 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
       const result = await claimDailyBonusAction();
       if (result.success) {
         setClaimedToday(true);
-        if (result.daily_streak !== undefined) setStreak(result.daily_streak);
-        if (result.personal_budget !== undefined) {
-          setBudget(result.personal_budget);
+        if (result.daily_streak !== undefined) {
+          setStreak(result.daily_streak);
+          if (onBonusClaimed) {
+            onBonusClaimed(result.daily_streak);
+          }
         }
         setFeedback({ type: 'success', text: result.message });
-        if (
-          onBonusClaimed &&
-          result.personal_budget !== undefined &&
-          result.daily_streak !== undefined
-        ) {
-          onBonusClaimed(result.personal_budget, result.daily_streak);
-        }
       } else {
         setFeedback({ type: 'error', text: result.message });
       }
@@ -79,18 +69,18 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 sm:p-6 space-y-4 shadow-xl">
-      {/* Mandatory Daily Lock & Free Transfer Alert Banner */}
+      {/* Daily Lock & Free Transfer Reminder Banner */}
       <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-start sm:items-center gap-3">
           <div className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400 shrink-0">
             <BellRing className="w-5 h-5" />
           </div>
           <p className="text-xs sm:text-sm font-bold text-emerald-100 leading-relaxed">
-            Rosters lock daily! Don&apos;t forget to use your{' '}
+            Rosters lock daily! Use your{' '}
             <span className="text-emerald-400 underline">
               1 Free Daily Transfer
-            </span>{' '}
-            to optimize your lineup for today&apos;s matches.
+            </span>
+            .
           </p>
         </div>
 
@@ -103,16 +93,16 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
         </Link>
       </div>
 
-      {/* Daily Check-In Bonus Bar */}
+      {/* Daily Check-In Streak Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
         <div className="flex items-center gap-3.5">
           <div className="p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-emerald-400">
-            <Gift className="w-5 h-5" />
+            <CalendarCheck className="w-5 h-5" />
           </div>
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-black text-white">
-                Daily Manager Check-In Bonus
+                Daily Manager Check-In
               </h3>
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[11px] font-black">
                 <Flame className="w-3 h-3" />
@@ -120,20 +110,15 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
               </span>
             </div>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Sign in every Matchday to claim{' '}
-              <strong className="text-emerald-400">+$100,000 (+$0.10M)</strong>{' '}
-              toward your personal salary cap (Current Cap:{' '}
-              <strong className="text-white font-mono">
-                ${budget.toFixed(2)}M
-              </strong>
-              ).
+              Check in every Matchday to build your active manager streak on
+              your public profile.
             </p>
           </div>
         </div>
 
         {!profile ? (
           <span className="text-xs font-bold text-zinc-400 bg-zinc-950 border border-zinc-800 px-4 py-2.5 rounded-xl">
-            Sign in with Discord to claim daily rewards
+            Sign in with Discord to track your streak
           </span>
         ) : claimedToday ? (
           <button
@@ -150,8 +135,8 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
             disabled={isPending}
             className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-black text-xs uppercase tracking-wider shadow-lg shadow-emerald-500/20 transition-all shrink-0 cursor-pointer"
           >
-            <Gift className="w-4 h-4" />
-            {isPending ? 'Claiming...' : 'Claim Daily Bonus (+$100k)'}
+            <CalendarCheck className="w-4 h-4" />
+            {isPending ? 'Checking In...' : 'Claim Daily Check-In'}
           </button>
         )}
       </div>
