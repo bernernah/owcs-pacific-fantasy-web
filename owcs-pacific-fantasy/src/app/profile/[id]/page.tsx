@@ -26,6 +26,8 @@ import type {
   SnapshotPlayerItem,
 } from '@/types/fantasy';
 
+export const dynamic = 'force-dynamic';
+
 interface ProfilePageProps {
   params: Promise<{
     id: string;
