@@ -146,3 +146,57 @@ export interface PriceChangeRow {
   out_price_delta: number;
   out_new_price: number;
 }
+
+export interface Season {
+  id: string;
+  name: string;
+  year: number;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface SnapshotPlayerItem {
+  slot: string;
+  id: string | null;
+  name: string;
+  role: PlayerRole;
+  price: number;
+  team_code: string;
+  is_captain: boolean;
+}
+
+export interface RosterSnapshotPayload {
+  captain_id?: string | null;
+  transfers_used?: number;
+  budget_used?: number;
+  players?: SnapshotPlayerItem[];
+}
+
+export interface GameweekRosterSnapshot {
+  id: string;
+  gameweek_id: string;
+  user_id: string;
+  season_id: string;
+  roster_json: RosterSnapshotPayload;
+  total_points: number;
+  created_at: string;
+  gameweeks?: Gameweek;
+  seasons?: Season;
+}
+
+export interface Badge {
+  id: string;
+  name: string;
+  description: string;
+  icon_url: string | null;
+  created_at?: string;
+}
+
+export interface UserBadge {
+  id: string;
+  user_id: string;
+  badge_id: string;
+  awarded_at: string;
+  badges?: Badge;
+}
+
