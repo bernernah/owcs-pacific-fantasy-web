@@ -1,6 +1,12 @@
 'use client';
 
-import React, { Suspense, useEffect, useState, useMemo } from 'react';
+import React, {
+  Suspense,
+  useEffect,
+  useState,
+  useMemo,
+  useCallback,
+} from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import {
@@ -16,6 +22,7 @@ import {
   ExternalLink,
   ChevronLeft,
   ChevronRight,
+  Pin,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, SCORING_MULTIPLIERS } from '@/lib/config';
@@ -50,7 +57,6 @@ function LeaderboardContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  // Read current ?page= parameter from URL (defaults to 1)
   const rawPageParam = Number(searchParams.get('page') ?? '1');
   const currentPage =
     Number.isFinite(rawPageParam) && rawPageParam >= 1
@@ -60,6 +66,10 @@ function LeaderboardContent() {
   const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(
     null
   );
+  const [myLeaderboardRow, setMyLeaderboardRow] =
+    useState<LeaderboardRow | null>(null);
+  const [myRosters, setMyRosters] = useState<UserRoster[]>([]);
+
   const [pageLeaderboardRows, setPageLeaderboardRows] = useState<
     LeaderboardRow[]
   >([]);
@@ -74,9 +84,9 @@ function LeaderboardContent() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
 
-  // 1. Load static reference data (Current Auth User, Matchdays & Players) once
+  // 1. Load static reference data & logged-in user's permanent standing
   useEffect(() => {
-    async function loadReferenceData() {
+    async function loadReferenceAndUserStanding() {
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -93,22 +103,44 @@ function LeaderboardContent() {
           `Manager_${user.id.slice(0, 6)}`;
         const avatarUrl = user.user_metadata?.avatar_url || null;
 
-        const { data: upsertedProfile } = await supabase
-          .from('profiles')
-          .upsert(
-            {
-              id: user.id,
-              discord_id: String(discordId),
-              username: String(username),
-              avatar_url: avatarUrl,
-            },
-            { onConflict: 'id' }
-          )
-          .select('*')
-          .maybeSingle();
+        const [
+          { data: upsertedProfile },
+          { data: myLbData },
+          { data: myRosterData },
+        ] = await Promise.all([
+          supabase
+            .from('profiles')
+            .upsert(
+              {
+                id: user.id,
+                discord_id: String(discordId),
+                username: String(username),
+                avatar_url: avatarUrl,
+              },
+              { onConflict: 'id' }
+            )
+            .select('*')
+            .maybeSingle(),
+          supabase
+            .from('leaderboard_view')
+            .select('*')
+            .eq('user_id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('user_rosters')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('updated_at', { ascending: false }),
+        ]);
 
         if (upsertedProfile) {
           setCurrentUserProfile(upsertedProfile as Profile);
+        }
+        if (myLbData) {
+          setMyLeaderboardRow(myLbData as LeaderboardRow);
+        }
+        if (myRosterData) {
+          setMyRosters(myRosterData as UserRoster[]);
         }
       }
 
@@ -131,7 +163,7 @@ function LeaderboardContent() {
       setPlayersById(map);
     }
 
-    loadReferenceData();
+    loadReferenceAndUserStanding();
   }, [supabase]);
 
   // 2. Fetch Paginated Leaderboard Slice (10 rows per page via .range()) & Total Count
@@ -195,18 +227,17 @@ function LeaderboardContent() {
     return active?.id ?? null;
   }, [gameweeks]);
 
-  // Combine the 10 paginated leaderboard rows with their active 5-player lineups
-  const displayedRows = useMemo<PaginatedStandingRow[]>(() => {
-    const gwNumberById: Record<string, number> = {};
+  const gwNumberById = useMemo(() => {
+    const map: Record<string, number> = {};
     for (const gw of gameweeks) {
-      gwNumberById[gw.id] = gw.number;
+      map[gw.id] = gw.number;
     }
+    return map;
+  }, [gameweeks]);
 
-    return pageLeaderboardRows.map((lbRow) => {
-      const userRosters = pageRosters.filter(
-        (r) => r.user_id === lbRow.user_id
-      );
-
+  // Shared helper to map a LeaderboardRow + UserRosters into a display row
+  const buildStandingRow = useCallback(
+    (lbRow: LeaderboardRow, userRosters: UserRoster[]): PaginatedStandingRow => {
       const sortedUserRosters = [...userRosters].sort(
         (a, b) =>
           (gwNumberById[b.gameweek_id] ?? 0) -
@@ -262,15 +293,25 @@ function LeaderboardContent() {
         captainId: displayedRoster?.captain_id ?? null,
         totalScore: Number(score.toFixed(1)),
       };
+    },
+    [gwNumberById, selectedScope, activeOrLatestGwId, playersById]
+  );
+
+  // 10 Paginated Rows
+  const displayedRows = useMemo<PaginatedStandingRow[]>(() => {
+    return pageLeaderboardRows.map((lbRow) => {
+      const userRosters = pageRosters.filter(
+        (r) => r.user_id === lbRow.user_id
+      );
+      return buildStandingRow(lbRow, userRosters);
     });
-  }, [
-    pageLeaderboardRows,
-    pageRosters,
-    playersById,
-    gameweeks,
-    selectedScope,
-    activeOrLatestGwId,
-  ]);
+  }, [pageLeaderboardRows, pageRosters, buildStandingRow]);
+
+  // Permanent 11th Pinned Row for the Logged-In User
+  const pinnedUserRow = useMemo<PaginatedStandingRow | null>(() => {
+    if (!myLeaderboardRow) return null;
+    return buildStandingRow(myLeaderboardRow, myRosters);
+  }, [myLeaderboardRow, myRosters, buildStandingRow]);
 
   const formatOrdinal = (n: number) => {
     const s = ['th', 'st', 'nd', 'rd'];
@@ -304,7 +345,7 @@ function LeaderboardContent() {
       );
     }
     return (
-      <span className="font-mono text-xs font-semibold text-zinc-400 pl-1">
+      <span className="font-mono text-xs font-semibold text-zinc-300 pl-1">
         {formatOrdinal(rank)}
       </span>
     );
@@ -436,7 +477,7 @@ function LeaderboardContent() {
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
             <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 p-3 text-center">
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
-                Per Kill (Elim)
+                Every 3 Elims
               </span>
               <span className="text-base font-black text-emerald-400 font-mono mt-1 block">
                 {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_KILL)} pt
@@ -574,7 +615,7 @@ function LeaderboardContent() {
       />
 
       {/* ====================================================================
-          PAGINATED GLOBAL LEADERBOARD (10 MANAGERS PER PAGE)
+          PAGINATED GLOBAL LEADERBOARD + PINNED 11TH USER ROW
       ==================================================================== */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 sm:p-8 shadow-2xl space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -696,76 +737,182 @@ function LeaderboardContent() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/60 text-sm">
-                {displayedRows.map((row) => (
+                {displayedRows.map((row) => {
+                  const isMe =
+                    Boolean(pinnedUserRow) &&
+                    row.userId === pinnedUserRow?.userId;
+
+                  return (
+                    <tr
+                      key={row.userId}
+                      onClick={() => router.push(`/profile/${row.userId}`)}
+                      className={`group cursor-pointer transition-colors ${
+                        isMe
+                          ? 'bg-emerald-500/5 hover:bg-emerald-500/10'
+                          : 'hover:bg-zinc-800/50'
+                      }`}
+                    >
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        {renderRankCell(row.rank)}
+                      </td>
+
+                      <td className="py-3.5 px-4 whitespace-nowrap">
+                        <Link
+                          href={`/profile/${row.userId}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex items-center gap-3 group/link"
+                        >
+                          {row.avatarUrl ? (
+                            <img
+                              src={row.avatarUrl}
+                              alt={row.username}
+                              className="w-8 h-8 rounded-full object-cover ring-1 ring-zinc-700 group-hover:ring-emerald-400 shrink-0 transition-all"
+                            />
+                          ) : (
+                            <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-200 flex items-center justify-center font-bold text-xs shrink-0">
+                              {row.username.slice(0, 2).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <p className="font-bold text-white text-xs sm:text-sm truncate group-hover:text-emerald-400 group-hover/link:text-emerald-400 transition-colors inline-flex items-center gap-1.5">
+                              <span>{row.username}&apos;s Team</span>
+                              <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-100 text-emerald-400 transition-opacity" />
+                            </p>
+                            <p className="text-[11px] text-zinc-500 truncate block">
+                              @{row.username}
+                            </p>
+                          </div>
+                        </Link>
+                      </td>
+
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        {renderPlayerSlotCell(row.tank, row.captainId)}
+                      </td>
+
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        {renderPlayerSlotCell(row.dps1, row.captainId)}
+                      </td>
+
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        {renderPlayerSlotCell(row.dps2, row.captainId)}
+                      </td>
+
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        {renderPlayerSlotCell(row.sup1, row.captainId)}
+                      </td>
+
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        {renderPlayerSlotCell(row.sup2, row.captainId)}
+                      </td>
+
+                      <td className="py-3.5 px-4 text-right whitespace-nowrap font-mono font-bold text-white group-hover:text-emerald-400 transition-colors">
+                        {row.totalScore % 1 === 0
+                          ? row.totalScore.toFixed(0)
+                          : row.totalScore.toFixed(1)}{' '}
+                        <span className="text-zinc-400 font-normal text-xs">
+                          pts
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+
+              {/* STEP 2: PERMANENT PINNED 11TH ROW FOR THE LOGGED-IN USER */}
+              {pinnedUserRow && (
+                <tfoot>
                   <tr
-                    key={row.userId}
-                    onClick={() => router.push(`/profile/${row.userId}`)}
-                    className="group cursor-pointer hover:bg-zinc-800/50 transition-colors"
+                    onClick={() =>
+                      router.push(`/profile/${pinnedUserRow.userId}`)
+                    }
+                    className="group cursor-pointer bg-zinc-800/80 hover:bg-zinc-800 border-t-2 border-b border-emerald-500/60 shadow-lg transition-colors"
                   >
-                    <td className="py-3.5 px-4 whitespace-nowrap">
-                      {renderRankCell(row.rank)}
+                    <td className="py-4 px-4 whitespace-nowrap">
+                      <div className="flex items-center gap-1.5">
+                        <Pin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        {renderRankCell(pinnedUserRow.rank)}
+                      </div>
                     </td>
 
-                    <td className="py-3.5 px-4 whitespace-nowrap">
+                    <td className="py-4 px-4 whitespace-nowrap">
                       <Link
-                        href={`/profile/${row.userId}`}
+                        href={`/profile/${pinnedUserRow.userId}`}
                         onClick={(e) => e.stopPropagation()}
                         className="flex items-center gap-3 group/link"
                       >
-                        {row.avatarUrl ? (
+                        {pinnedUserRow.avatarUrl ? (
                           <img
-                            src={row.avatarUrl}
-                            alt={row.username}
-                            className="w-8 h-8 rounded-full object-cover ring-1 ring-zinc-700 group-hover:ring-emerald-400 shrink-0 transition-all"
+                            src={pinnedUserRow.avatarUrl}
+                            alt={pinnedUserRow.username}
+                            className="w-8 h-8 rounded-full object-cover ring-2 ring-emerald-400 shrink-0"
                           />
                         ) : (
-                          <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-200 flex items-center justify-center font-bold text-xs shrink-0">
-                            {row.username.slice(0, 2).toUpperCase()}
+                          <div className="w-8 h-8 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 flex items-center justify-center font-bold text-xs shrink-0">
+                            {pinnedUserRow.username.slice(0, 2).toUpperCase()}
                           </div>
                         )}
                         <div className="min-w-0">
-                          <p className="font-bold text-white text-xs sm:text-sm truncate group-hover:text-emerald-400 group-hover/link:text-emerald-400 transition-colors inline-flex items-center gap-1.5">
-                            <span>{row.username}&apos;s Team</span>
-                            <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-100 text-emerald-400 transition-opacity" />
-                          </p>
-                          <p className="text-[11px] text-zinc-500 truncate block">
-                            @{row.username}
+                          <div className="flex items-center gap-2">
+                            <p className="font-black text-white text-xs sm:text-sm truncate group-hover:text-emerald-400 transition-colors">
+                              {pinnedUserRow.username}&apos;s Team
+                            </p>
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-500 text-zinc-950 font-black text-[10px] uppercase tracking-wider">
+                              You
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-emerald-400/90 font-semibold truncate block">
+                            Pinned Personal Standing
                           </p>
                         </div>
                       </Link>
                     </td>
 
-                    <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.tank, row.captainId)}
+                    <td className="py-4 px-4 text-center whitespace-nowrap">
+                      {renderPlayerSlotCell(
+                        pinnedUserRow.tank,
+                        pinnedUserRow.captainId
+                      )}
                     </td>
 
-                    <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.dps1, row.captainId)}
+                    <td className="py-4 px-4 text-center whitespace-nowrap">
+                      {renderPlayerSlotCell(
+                        pinnedUserRow.dps1,
+                        pinnedUserRow.captainId
+                      )}
                     </td>
 
-                    <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.dps2, row.captainId)}
+                    <td className="py-4 px-4 text-center whitespace-nowrap">
+                      {renderPlayerSlotCell(
+                        pinnedUserRow.dps2,
+                        pinnedUserRow.captainId
+                      )}
                     </td>
 
-                    <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.sup1, row.captainId)}
+                    <td className="py-4 px-4 text-center whitespace-nowrap">
+                      {renderPlayerSlotCell(
+                        pinnedUserRow.sup1,
+                        pinnedUserRow.captainId
+                      )}
                     </td>
 
-                    <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                      {renderPlayerSlotCell(row.sup2, row.captainId)}
+                    <td className="py-4 px-4 text-center whitespace-nowrap">
+                      {renderPlayerSlotCell(
+                        pinnedUserRow.sup2,
+                        pinnedUserRow.captainId
+                      )}
                     </td>
 
-                    <td className="py-3.5 px-4 text-right whitespace-nowrap font-mono font-bold text-white group-hover:text-emerald-400 transition-colors">
-                      {row.totalScore % 1 === 0
-                        ? row.totalScore.toFixed(0)
-                        : row.totalScore.toFixed(1)}{' '}
-                      <span className="text-zinc-400 font-normal text-xs">
+                    <td className="py-4 px-4 text-right whitespace-nowrap font-mono font-black text-emerald-400">
+                      {pinnedUserRow.totalScore % 1 === 0
+                        ? pinnedUserRow.totalScore.toFixed(0)
+                        : pinnedUserRow.totalScore.toFixed(1)}{' '}
+                      <span className="text-zinc-300 font-normal text-xs">
                         pts
                       </span>
                     </td>
                   </tr>
-                ))}
-              </tbody>
+                </tfoot>
+              )}
             </table>
           </div>
         )}

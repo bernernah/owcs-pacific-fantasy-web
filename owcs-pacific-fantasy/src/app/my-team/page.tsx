@@ -1,16 +1,7 @@
 'use client';
 
-import TeamFixturesTooltip from '@/components/TeamFixturesTooltip';
-import type {
-  Player,
-  Team,
-  Gameweek,
-  UserRoster,
-  PlayerRole,
-  Fixture,
-} from '@/types/fantasy';
-
 import React, { useEffect, useState, useMemo, useRef } from 'react';
+import Link from 'next/link';
 import {
   Shield,
   DollarSign,
@@ -25,10 +16,21 @@ import {
   Save,
   ArrowDownCircle,
   Crown,
+  Trophy,
+  TrendingUp,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, SCORING_MULTIPLIERS } from '@/lib/config';
 import RoleBadge from '@/components/RoleBadge';
+import TeamFixturesTooltip from '@/components/TeamFixturesTooltip';
+import type {
+  Player,
+  Team,
+  Gameweek,
+  UserRoster,
+  PlayerRole,
+  Fixture,
+} from '@/types/fantasy';
 
 type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
 
@@ -48,14 +50,17 @@ export default function MyTeamPage() {
   const marketSectionRef = useRef<HTMLDivElement | null>(null);
 
   const [userId, setUserId] = useState<string | null>(null);
+  const [username, setUsername] = useState<string>('Manager');
+  const [userRank, setUserRank] = useState<number | null>(null);
+  const [userTotalPoints, setUserTotalPoints] = useState<number>(0);
+  const [userBaseBudget, setUserBaseBudget] = useState<number>(100.0);
+
   const [activeGw, setActiveGw] = useState<Gameweek | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
-  const [existingRoster, setExistingRoster] = useState<UserRoster | null>(null);
-  const [userBaseBudget, setUserBaseBudget] = useState<number>(100.0);
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
+  const [existingRoster, setExistingRoster] = useState<UserRoster | null>(null);
 
-  // Saved state in DB vs Local experimental draft state
   const [savedSlots, setSavedSlots] = useState<Record<SlotKey, Player | null>>({
     tank: null,
     dps1: null,
@@ -72,15 +77,12 @@ export default function MyTeamPage() {
     sup2: null,
   });
 
-  // Saved Captain vs Local Draft Captain
   const [savedCaptainId, setSavedCaptainId] = useState<string | null>(null);
   const [draftCaptainId, setDraftCaptainId] = useState<string | null>(null);
 
-  // Active slot being targeted by the user
   const [activeSlotKey, setActiveSlotKey] = useState<SlotKey | null>(null);
   const [isRoleModalOpen, setIsRoleModalOpen] = useState<boolean>(false);
 
-  // Market Filters
   const [roleFilter, setRoleFilter] = useState<PlayerRole | 'ALL'>('ALL');
   const [teamFilter, setTeamFilter] = useState<string>('ALL');
   const [maxPriceFilter, setMaxPriceFilter] = useState<number>(50);
@@ -102,19 +104,29 @@ export default function MyTeamPage() {
       } = await supabase.auth.getUser();
       setUserId(user?.id ?? null);
 
-      const [{ data: gwData }, { data: teamData }, { data: playerData }] =
-        await Promise.all([
-          supabase
-            .from('gameweeks')
-            .select('*')
-            .order('number', { ascending: true }),
-          supabase.from('teams').select('*').order('name'),
-          supabase
-            .from('players')
-            .select('*, teams(*)')
-            .eq('is_active', true)
-            .order('price', { ascending: false }),
-        ]);
+      const [
+        { data: gwData },
+        { data: teamData },
+        { data: playerData },
+        { data: fixtureData },
+      ] = await Promise.all([
+        supabase
+          .from('gameweeks')
+          .select('*')
+          .order('number', { ascending: true }),
+        supabase.from('teams').select('*').order('name'),
+        supabase
+          .from('players')
+          .select('*, teams(*)')
+          .eq('is_active', true)
+          .order('price', { ascending: false }),
+        supabase
+          .from('fixtures')
+          .select(
+            '*, team_a_team:teams!fixtures_team_a_fkey(*), team_b_team:teams!fixtures_team_b_fkey(*), gameweeks(*)'
+          )
+          .order('match_time', { ascending: true }),
+      ]);
 
       let gws = (gwData as Gameweek[]) ?? [];
 
@@ -123,7 +135,7 @@ export default function MyTeamPage() {
           .from('gameweeks')
           .insert({
             number: 1,
-            name: 'Gameweek 1 - Day 1',
+            name: 'Matchday 1 - Day 1',
             lock_time: FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE,
             is_playoffs: false,
             status: 'ACTIVE',
@@ -145,15 +157,45 @@ export default function MyTeamPage() {
       setTeams((teamData as Team[]) ?? []);
       const allPlayers = (playerData as Player[]) ?? [];
       setPlayers(allPlayers);
+      setFixtures((fixtureData as Fixture[]) ?? []);
 
-      if (user && currentGw) {
-        const { data: userRosters } = await supabase
-          .from('user_rosters')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false });
+      if (user) {
+        const [
+          { data: profData },
+          { data: lbData },
+          { data: userRosters },
+        ] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select('username, personal_budget')
+            .eq('id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('leaderboard_view')
+            .select('rank, total_points, username')
+            .eq('user_id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('user_rosters')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false }),
+        ]);
 
-        if (userRosters && userRosters.length > 0) {
+        if (profData?.username) {
+          setUsername(profData.username);
+        } else if (lbData?.username) {
+          setUsername(lbData.username);
+        }
+        if (profData?.personal_budget) {
+          setUserBaseBudget(Number(profData.personal_budget));
+        }
+        if (lbData) {
+          setUserRank(Number(lbData.rank));
+          setUserTotalPoints(Number(lbData.total_points ?? 0));
+        }
+
+        if (currentGw && userRosters && userRosters.length > 0) {
           const exactGwRoster = userRosters.find(
             (r) => r.gameweek_id === currentGw.id
           ) as UserRoster | undefined;
@@ -192,7 +234,6 @@ export default function MyTeamPage() {
     loadTeamSheet();
   }, [supabase]);
 
-  // Client-only evaluation of lock status
   useEffect(() => {
     if (!activeGw) {
       setIsLocked(false);
@@ -205,10 +246,11 @@ export default function MyTeamPage() {
     );
   }, [activeGw]);
 
+  // Dynamic Personal Budget + $5.0M Playoff Boost
   const maxBudget = useMemo(() => {
-  const playoffBoost = activeGw?.is_playoffs ? 5.0 : 0.0;
-  return Number((userBaseBudget + playoffBoost).toFixed(1));
- }, [userBaseBudget, activeGw]);
+    const playoffBoost = activeGw?.is_playoffs ? 5.0 : 0.0;
+    return Number((userBaseBudget + playoffBoost).toFixed(1));
+  }, [userBaseBudget, activeGw]);
 
   const maxPerTeam = activeGw?.is_playoffs
     ? FANTASY_CONFIG.PLAYOFF_WILDCARD_MAX_PER_TEAM
@@ -234,7 +276,6 @@ export default function MyTeamPage() {
     return counts;
   }, [selectedPlayers]);
 
-  // Detect if local draft (slots OR captain) differs from what is saved in Supabase
   const hasUnsavedChanges = useMemo(() => {
     const keys: SlotKey[] = ['tank', 'dps1', 'dps2', 'sup1', 'sup2'];
     const slotsChanged = keys.some(
@@ -248,6 +289,12 @@ export default function MyTeamPage() {
     () => selectedPlayers.find((p) => p.id === draftCaptainId) ?? null,
     [selectedPlayers, draftCaptainId]
   );
+
+  const formatOrdinal = (n: number) => {
+    const s = ['th', 'st', 'nd', 'rd'];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  };
 
   const handleSlotClick = (slotKey: SlotKey) => {
     if (isLocked) return;
@@ -273,7 +320,6 @@ export default function MyTeamPage() {
       const replacedPlayer = prev[targetKey];
       const next = { ...prev, [targetKey]: newPlayer };
 
-      // If no captain yet, or if the user just swapped out their captain, assign the new player as captain
       if (!draftCaptainId || replacedPlayer?.id === draftCaptainId) {
         setDraftCaptainId(newPlayer.id);
       }
@@ -374,7 +420,7 @@ export default function MyTeamPage() {
     if (!activeGw) {
       setFeedback({
         type: 'error',
-        message: 'No active Gameweek found.',
+        message: 'No active Matchday found.',
       });
       return;
     }
@@ -434,7 +480,6 @@ export default function MyTeamPage() {
 
     setSaving(true);
 
-    // Send ONLY the Gameweek ID, 5-player UUID array, and Captain ID
     const { data, error } = await supabase.rpc('submit_roster_lineup', {
       p_gameweek_id: activeGw.id,
       p_new_roster: newRosterIds,
@@ -501,7 +546,6 @@ export default function MyTeamPage() {
             : 'bg-zinc-950/60 border-dashed border-zinc-800 hover:border-orange-500/60'
         }`}
       >
-        {/* Top Row: Role Badge + Captain Pill + Remove Button */}
         <div className="flex items-center justify-between gap-1">
           <div className="flex items-center gap-1.5">
             <RoleBadge role={expectedRole} size="sm" />
@@ -540,7 +584,6 @@ export default function MyTeamPage() {
           </div>
         </div>
 
-        {/* Center: Player Name or Empty Prompt */}
         {player ? (
           <div className="my-2">
             <span className="text-[10px] font-extrabold uppercase tracking-wider text-orange-400">
@@ -562,7 +605,6 @@ export default function MyTeamPage() {
           </div>
         )}
 
-        {/* Footer: Contract Price & 'C' Captain Toggle Button */}
         <div className="pt-2.5 border-t border-zinc-800/80 flex items-center justify-between text-xs">
           <span className="font-black text-emerald-400">
             {player ? `$${Number(player.price).toFixed(1)}M` : '—'}
@@ -609,13 +651,70 @@ export default function MyTeamPage() {
 
   return (
     <div className="space-y-8 pb-24">
+      {/* ====================================================================
+          STEP 1: PROMINENT FRANCHISE RANK, TEAM NAME & TOTAL POINTS HEADER
+      ==================================================================== */}
+      <div className="rounded-2xl border border-zinc-800 bg-gradient-to-r from-zinc-900 via-[#0f1420] to-zinc-900 p-6 shadow-2xl flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Distinct Global Rank Pill */}
+            <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-amber-400/15 border border-amber-400/40 text-amber-300 shadow-lg shadow-amber-500/10">
+              <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="text-xs font-black uppercase tracking-wider">
+                Global Rank:{' '}
+                <strong className="text-white text-sm font-mono">
+                  {userRank ? `#${userRank} (${formatOrdinal(userRank)})` : 'Unranked'}
+                </strong>
+              </span>
+            </div>
+
+            {/* Total Season Points Pill */}
+            <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
+              <TrendingUp className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="text-xs font-black uppercase tracking-wider">
+                Season Score:{' '}
+                <strong className="text-white text-sm font-mono">
+                  {userTotalPoints % 1 === 0
+                    ? userTotalPoints.toFixed(0)
+                    : userTotalPoints.toFixed(1)}{' '}
+                  pts
+                </strong>
+              </span>
+            </div>
+          </div>
+
+          <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
+            {username}&apos;s <span className="text-orange-500">Team Sheet</span>
+          </h1>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          {userId && (
+            <Link
+              href={`/profile/${userId}`}
+              className="px-4 py-2.5 rounded-xl border border-zinc-700 bg-zinc-950 hover:bg-zinc-800 text-xs font-bold text-zinc-200 transition-colors"
+            >
+              View Public Profile
+            </Link>
+          )}
+          <button
+            type="button"
+            onClick={handleSaveSquad}
+            disabled={saving || isLocked}
+            className="bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-5 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 transition-all cursor-pointer"
+          >
+            {saving ? 'Saving...' : 'Save Lineup'}
+          </button>
+        </div>
+      </div>
+
       {/* Playoff Wildcard Banner */}
       {activeGw?.is_playoffs && (
         <div className="rounded-2xl border border-amber-500/40 bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-zinc-900 p-4 flex items-center gap-3">
           <Sparkles className="w-5 h-5 text-amber-400 shrink-0" />
           <p className="text-xs sm:text-sm font-bold text-amber-200">
-            PLAYOFF WILDCARD ACTIVE: Salary cap boosted to{' '}
-            <span className="text-white underline">$110.0M</span>, up to{' '}
+            PLAYOFF WILDCARD ACTIVE: Personal salary cap boosted by{' '}
+            <span className="text-white underline">+$5.0M</span>, up to{' '}
             <span className="text-white underline">3 players per team</span>,
             and <span className="text-white underline">3 Free Transfers</span>{' '}
             available!
@@ -624,7 +723,7 @@ export default function MyTeamPage() {
       )}
 
       {/* Top Status & Budget Bar */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-4 flex items-center justify-between">
           <div>
             <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
@@ -661,7 +760,7 @@ export default function MyTeamPage() {
             >
               ${remainingBudget.toFixed(1)}M{' '}
               <span className="text-xs font-semibold text-zinc-500">
-                / ${maxBudget.toFixed(0)}M
+                / ${maxBudget.toFixed(1)}M
               </span>
             </p>
           </div>
@@ -689,14 +788,7 @@ export default function MyTeamPage() {
               Max {maxPerTeam} per OWCS Team
             </p>
           </div>
-          <button
-            type="button"
-            onClick={handleSaveSquad}
-            disabled={saving || isLocked}
-            className="bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 transition-all shrink-0"
-          >
-            {saving ? 'Saving...' : 'Save Lineup'}
-          </button>
+          <Shield className="w-6 h-6 text-orange-500/60" />
         </div>
       </div>
 
@@ -733,18 +825,15 @@ export default function MyTeamPage() {
         </div>
 
         <div className="space-y-6 max-w-3xl mx-auto">
-          {/* Frontline: 1 Tank */}
           <div className="grid grid-cols-1 max-w-xs mx-auto">
             {renderPitchCard('tank', 'Tank', 'TANK')}
           </div>
 
-          {/* Midline: 2 DPS */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl mx-auto">
             {renderPitchCard('dps1', 'DPS 1', 'DPS')}
             {renderPitchCard('dps2', 'DPS 2', 'DPS')}
           </div>
 
-          {/* Backline: 2 Support */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl mx-auto">
             {renderPitchCard('sup1', 'Support 1', 'SUPPORT')}
             {renderPitchCard('sup2', 'Support 2', 'SUPPORT')}
@@ -835,7 +924,6 @@ export default function MyTeamPage() {
           </div>
         </div>
 
-        {/* Market Grid */}
         {filteredMarket.length === 0 ? (
           <div className="py-12 text-center border border-dashed border-zinc-800 rounded-xl text-xs text-zinc-500">
             No players match the current filter criteria.
@@ -880,14 +968,14 @@ export default function MyTeamPage() {
                       {player.name}
                     </p>
                     <div className="flex items-center gap-1.5 text-xs text-zinc-400">
-                   <span>{player.teams?.name}</span>
-                     <TeamFixturesTooltip
-                       teamId={player.team_id}
-                       teamCode={player.teams?.code}
-                       fixtures={fixtures}
-                       activeGw={activeGw}
-                          />
-                      </div>
+                      <span>{player.teams?.name}</span>
+                      <TeamFixturesTooltip
+                        teamId={player.team_id}
+                        teamCode={player.teams?.code}
+                        fixtures={fixtures}
+                        activeGw={activeGw}
+                      />
+                    </div>
                   </div>
 
                   <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between">
@@ -929,6 +1017,20 @@ export default function MyTeamPage() {
           <div className="flex flex-wrap items-center gap-6">
             <div>
               <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
+                Global Rank
+              </span>
+              <span className="text-sm sm:text-base font-black text-amber-400 font-mono">
+                {userRank ? `#${userRank}` : 'Unranked'}{' '}
+                <span className="text-xs text-zinc-400 font-normal">
+                  ({userTotalPoints.toFixed(1)} pts)
+                </span>
+              </span>
+            </div>
+
+            <div className="h-7 w-px bg-zinc-800 hidden sm:block" />
+
+            <div>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 block">
                 Draft Budget Remaining
               </span>
               <span
@@ -938,7 +1040,7 @@ export default function MyTeamPage() {
               >
                 ${remainingBudget.toFixed(1)}M{' '}
                 <span className="text-xs text-zinc-500 font-normal">
-                  / ${maxBudget.toFixed(0)}M
+                  / ${maxBudget.toFixed(1)}M
                 </span>
               </span>
             </div>
@@ -1067,9 +1169,15 @@ export default function MyTeamPage() {
                           <p className="font-bold text-white text-sm">
                             {player.name}
                           </p>
-                          <p className="text-[11px] text-zinc-400">
-                            {player.teams?.name}
-                          </p>
+                          <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                            <span>{player.teams?.name}</span>
+                            <TeamFixturesTooltip
+                              teamId={player.team_id}
+                              teamCode={player.teams?.code}
+                              fixtures={fixtures}
+                              activeGw={activeGw}
+                            />
+                          </div>
                         </div>
                       </div>
 
