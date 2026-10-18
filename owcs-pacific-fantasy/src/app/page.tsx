@@ -235,7 +235,6 @@ function LeaderboardContent() {
     return map;
   }, [gameweeks]);
 
-  // Shared helper to map a LeaderboardRow + UserRosters into a display row
   const buildStandingRow = useCallback(
     (lbRow: LeaderboardRow, userRosters: UserRoster[]): PaginatedStandingRow => {
       const sortedUserRosters = [...userRosters].sort(
@@ -297,7 +296,6 @@ function LeaderboardContent() {
     [gwNumberById, selectedScope, activeOrLatestGwId, playersById]
   );
 
-  // 10 Paginated Rows
   const displayedRows = useMemo<PaginatedStandingRow[]>(() => {
     return pageLeaderboardRows.map((lbRow) => {
       const userRosters = pageRosters.filter(
@@ -307,7 +305,6 @@ function LeaderboardContent() {
     });
   }, [pageLeaderboardRows, pageRosters, buildStandingRow]);
 
-  // Permanent 11th Pinned Row for the Logged-In User
   const pinnedUserRow = useMemo<PaginatedStandingRow | null>(() => {
     if (!myLeaderboardRow) return null;
     return buildStandingRow(myLeaderboardRow, myRosters);
@@ -376,20 +373,29 @@ function LeaderboardContent() {
     );
   };
 
-  const formatSignedStat = (val: number) => (val >= 0 ? `+${val}` : `${val}`);
+  // Dynamic Formatting Helpers Driven by src/lib/config.ts
+  const formatSignedPointValue = (val: number) => {
+    const num = Number(val);
+    const sign = num >= 0 ? '+' : '';
+    const unit = Math.abs(num) === 1 ? 'pt' : 'pts';
+    return `${sign}${num} ${unit}`;
+  };
+
+  const formattedTransferPenalty = `-${Math.abs(
+    Number(FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS)
+  )} pts`;
 
   const howToPlayCards = [
     {
       title: 'Draft your 5-player roster',
       icon: Users,
-      description:
-        'Select 1 Tank, 2 DPS, and 2 Support players (max 2 per OWCS team in Regular Season) and assign your 1.5x Points Captain.',
+      description: `Select 1 Tank, 2 DPS, and 2 Support players (max ${FANTASY_CONFIG.REGULAR_SEASON_MAX_PER_TEAM} per OWCS team in Regular Season) and assign your ${SCORING_MULTIPLIERS.CAPTAIN_MULTIPLIER}x Points Captain.`,
       badge: '1 - 2 - 2 Formation',
     },
     {
-      title: 'Manage your $100M Budget',
+      title: `Manage your $${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M Budget`,
       icon: DollarSign,
-      description: `Build within your $${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M starting salary cap and grow your franchise value as player prices shift based on Matchday performance.`,
+      description: `Build within your $${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M starting salary cap, grow your franchise value via player price changes, and receive a +$${FANTASY_CONFIG.PLAYOFF_BUDGET_BONUS}M bonus added to your personal budget for Playoffs.`,
       badge: 'Dynamic Valuation',
     },
     {
@@ -400,10 +406,10 @@ function LeaderboardContent() {
       badge: 'Daily Matchdays',
     },
     {
-      title: 'Use your 1 Free Daily Transfer',
+      title: `Use your ${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free Daily Transfer`,
       icon: ArrowLeftRight,
-      description: `Every Matchday grants ${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free Daily Transfer (3 in Playoffs) to swap out underperforming players without taking a -${FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS} pt hit.`,
-      badge: '1 Free / Day',
+      description: `Every Matchday grants ${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free Daily Transfer (${FANTASY_CONFIG.PLAYOFF_WILDCARD_FREE_TRANSFERS} in Playoffs) to swap out underperforming players without taking a ${formattedTransferPenalty} hit.`,
+      badge: `${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free / Day`,
     },
   ];
 
@@ -460,7 +466,7 @@ function LeaderboardContent() {
           </div>
         </div>
 
-        {/* Dynamic Scoring Formula Card */}
+        {/* Dynamic Scoring Formula Card (Synced directly to src/lib/config.ts) */}
         <div className="lg:col-span-7 rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl flex flex-col justify-between space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-zinc-800 pb-3">
             <div className="flex items-center gap-2">
@@ -480,7 +486,7 @@ function LeaderboardContent() {
                 Every 3 Elims
               </span>
               <span className="text-base font-black text-emerald-400 font-mono mt-1 block">
-                {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_KILL)} pt
+                {formatSignedPointValue(SCORING_MULTIPLIERS.POINTS_PER_KILL)}
               </span>
             </div>
 
@@ -489,7 +495,7 @@ function LeaderboardContent() {
                 Per Death
               </span>
               <span className="text-base font-black text-rose-400 font-mono mt-1 block">
-                {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_DEATH)} pt
+                {formatSignedPointValue(SCORING_MULTIPLIERS.POINTS_PER_DEATH)}
               </span>
             </div>
 
@@ -498,7 +504,9 @@ function LeaderboardContent() {
                 Per 1k Damage
               </span>
               <span className="text-base font-black text-emerald-400 font-mono mt-1 block">
-                {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_1K_DAMAGE)} pt
+                {formatSignedPointValue(
+                  SCORING_MULTIPLIERS.POINTS_PER_1K_DAMAGE
+                )}
               </span>
             </div>
 
@@ -507,8 +515,9 @@ function LeaderboardContent() {
                 Per 1k Healing
               </span>
               <span className="text-base font-black text-emerald-400 font-mono mt-1 block">
-                {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_1K_HEALING)}{' '}
-                pts
+                {formatSignedPointValue(
+                  SCORING_MULTIPLIERS.POINTS_PER_1K_HEALING
+                )}
               </span>
             </div>
 
@@ -517,7 +526,7 @@ function LeaderboardContent() {
                 Map Win Bonus
               </span>
               <span className="text-base font-black text-emerald-400 font-mono mt-1 block">
-                {formatSignedStat(SCORING_MULTIPLIERS.POINTS_PER_MAP_WIN)} pts
+                {formatSignedPointValue(SCORING_MULTIPLIERS.POINTS_PER_MAP_WIN)}
               </span>
             </div>
           </div>
@@ -526,7 +535,8 @@ function LeaderboardContent() {
             <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 px-3 py-2 flex items-center justify-between">
               <span className="text-zinc-400">Starting Cap:</span>
               <strong className="text-emerald-400 font-mono">
-                ${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M (+$5M Playoffs)
+                ${FANTASY_CONFIG.REGULAR_SEASON_BUDGET}M (+$
+                {FANTASY_CONFIG.PLAYOFF_BUDGET_BONUS}M Playoffs)
               </strong>
             </div>
             <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 px-3 py-2 flex items-center justify-between">
@@ -539,7 +549,7 @@ function LeaderboardContent() {
             <div className="rounded-lg bg-zinc-950/60 border border-zinc-800 px-3 py-2 flex items-center justify-between">
               <span className="text-zinc-400">Extra Transfer:</span>
               <strong className="text-rose-400 font-mono">
-                -{FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS} pts (
+                {formattedTransferPenalty} (
                 {FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free/Day)
               </strong>
             </div>
@@ -818,7 +828,7 @@ function LeaderboardContent() {
                 })}
               </tbody>
 
-              {/* STEP 2: PERMANENT PINNED 11TH ROW FOR THE LOGGED-IN USER */}
+              {/* PERMANENT PINNED 11TH ROW FOR THE LOGGED-IN USER */}
               {pinnedUserRow && (
                 <tfoot>
                   <tr

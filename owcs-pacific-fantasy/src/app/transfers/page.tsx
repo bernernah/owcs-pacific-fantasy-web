@@ -26,6 +26,7 @@ export default function TransfersPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [userBaseBudget, setUserBaseBudget] = useState<number>(100.0);
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
+  const [playoffBonusApplied, setPlayoffBonusApplied] = useState<boolean>(false);
 
   const [originalSlots, setOriginalSlots] = useState<
     Record<SlotKey, Player | null>
@@ -137,11 +138,14 @@ export default function TransfersPage() {
       if (user) {
         const { data: prof } = await supabase
           .from('profiles')
-          .select('personal_budget')
+          .select('personal_budget, playoff_bonus_applied')
           .eq('id', user.id)
           .maybeSingle();
         if (prof?.personal_budget) {
           setUserBaseBudget(Number(prof.personal_budget));
+        }
+        if (prof?.playoff_bonus_applied !== undefined) {
+          setPlayoffBonusApplied(Boolean(prof.playoff_bonus_applied));
         }
       }
 
@@ -253,11 +257,13 @@ export default function TransfersPage() {
   const totalPointHit =
     extraPaidTransfers * FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS;
 
-  // Dynamic Personal Budget + $5.0M Playoff Boost
   const maxBudget = useMemo(() => {
-    const playoffBoost = activeGw?.is_playoffs ? 5.0 : 0.0;
-    return Number((userBaseBudget + playoffBoost).toFixed(1));
-  }, [userBaseBudget, activeGw]);
+    const relativePlayoffBonus =
+      activeGw?.is_playoffs && !playoffBonusApplied
+        ? FANTASY_CONFIG.PLAYOFF_BUDGET_BONUS
+        : 0.0;
+    return Number((userBaseBudget + relativePlayoffBonus).toFixed(1));
+  }, [userBaseBudget, activeGw, playoffBonusApplied]);
 
   const maxPerTeam = activeGw?.is_playoffs
     ? FANTASY_CONFIG.PLAYOFF_WILDCARD_MAX_PER_TEAM
@@ -431,8 +437,8 @@ export default function TransfersPage() {
       {statusMsg && (
         <div
           className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${statusMsg.type === 'success'
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-              : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
             }`}
         >
           {statusMsg.type === 'success' ? (
@@ -481,10 +487,10 @@ export default function TransfersPage() {
                   key={slot.key}
                   onClick={() => !isLocked && setActiveSlotToSwap(slot.key)}
                   className={`rounded-xl border p-4 flex items-center justify-between cursor-pointer transition-all ${isSelectedForSwap
-                      ? 'border-orange-500 bg-orange-500/10'
-                      : isModified
-                        ? 'border-emerald-500/40 bg-emerald-500/5'
-                        : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700'
+                    ? 'border-orange-500 bg-orange-500/10'
+                    : isModified
+                      ? 'border-emerald-500/40 bg-emerald-500/5'
+                      : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700'
                     }`}
                 >
                   <div className="flex items-center gap-3">

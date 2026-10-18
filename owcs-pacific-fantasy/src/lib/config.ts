@@ -11,7 +11,7 @@ export const SCORING_MULTIPLIERS = {
   POINTS_PER_1K_DAMAGE: 1.0,
 
   /** Points awarded per 1,000 Healing done */
-  POINTS_PER_1K_HEALING: 1.2,
+  POINTS_PER_1K_HEALING: 1.0,
 
   /** Flat bonus points awarded if the player's team won the map */
   POINTS_PER_MAP_WIN: 3.0,
@@ -26,23 +26,23 @@ export const FANTASY_CONFIG = {
 
   SEASON_START_GW1_LOCK: '2026-10-26T18:00:00+08:00',
 
-  TRANSFER_HIT_PENALTY_PTS: 4,
+  /** Exact point penalty per extra transfer (displayed as -15 pts in UI) */
+  TRANSFER_HIT_PENALTY_PTS: 15,
 
   REGULAR_SEASON_FREE_TRANSFERS: 1,
   PLAYOFF_WILDCARD_FREE_TRANSFERS: 3,
 
   REGULAR_SEASON_BUDGET: 100.0,
-  PLAYOFF_WILDCARD_BUDGET: 110.0,
+
+  /** Relative bonus added to each manager's current personal_budget for Playoffs */
+  PLAYOFF_BUDGET_BONUS: 5.0,
+
   REGULAR_SEASON_MAX_PER_TEAM: 2,
   PLAYOFF_WILDCARD_MAX_PER_TEAM: 3,
 
   SCORING: SCORING_MULTIPLIERS,
 } as const;
 
-/**
- * Shared formula used across the Spreadsheet Grid and Admin previews.
- * Eliminations use Math.floor(kills / 3) -> 1 point for every 3 full eliminations.
- */
 export function calculatePlayerFantasyPoints(stats: {
   kills: number;
   deaths: number;
@@ -72,7 +72,8 @@ export async function syncConfigToDatabase(supabase: SupabaseClient) {
     p_heal: SCORING_MULTIPLIERS.POINTS_PER_1K_HEALING,
     p_win: SCORING_MULTIPLIERS.POINTS_PER_MAP_WIN,
     p_captain_mult: SCORING_MULTIPLIERS.CAPTAIN_MULTIPLIER,
-    p_transfer_penalty: FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS,
+    p_transfer_penalty: Math.abs(FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS),
+    p_playoff_bonus: FANTASY_CONFIG.PLAYOFF_BUDGET_BONUS,
   });
 }
 
