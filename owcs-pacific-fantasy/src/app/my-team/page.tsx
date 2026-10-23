@@ -243,8 +243,7 @@ export default function MyTeamPage() {
       setIsLocked(false);
       return;
     }
-    const lockDeadlineMs =
-      new Date(activeGw.lock_time).getTime() - 15 * 60 * 1000;
+    const lockDeadlineMs = new Date(activeGw.lock_time).getTime();
     setIsLocked(
       Date.now() >= lockDeadlineMs || activeGw.status === 'COMPLETED'
     );

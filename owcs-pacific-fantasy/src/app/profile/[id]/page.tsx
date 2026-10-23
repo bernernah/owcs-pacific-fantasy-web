@@ -144,9 +144,14 @@ const getCachedManagerProfileBundle = unstable_cache(
   }
 );
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function ManagerProfileContent({ params }: ProfilePageProps) {
   const { id: profileId } = await params;
-  const bundle = await getCachedManagerProfileBundle(profileId);
+  const bundle = UUID_REGEX.test(profileId)
+  ? await getCachedManagerProfileBundle(profileId)
+  : null;
 
   if (!bundle) {
     return (

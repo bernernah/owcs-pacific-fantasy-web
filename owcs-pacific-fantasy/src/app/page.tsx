@@ -57,10 +57,11 @@ function LeaderboardContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
+  const MAX_SAFE_PAGE = 500;
   const rawPageParam = Number(searchParams.get('page') ?? '1');
   const currentPage =
     Number.isFinite(rawPageParam) && rawPageParam >= 1
-      ? Math.floor(rawPageParam)
+      ? Math.min(MAX_SAFE_PAGE, Math.floor(rawPageParam))
       : 1;
 
   const [currentUserProfile, setCurrentUserProfile] = useState<Profile | null>(
@@ -186,9 +187,25 @@ function LeaderboardContent() {
 
       const { data: lbData, count } = await query.range(from, to);
 
+      const safeTotalCount = count ?? 0;
+      const computedMaxPage = Math.max(
+        1,
+        Math.ceil(safeTotalCount / PAGE_SIZE)
+      );
+
+      // If a user requested ?page=999999 beyond the last page, snap them to the final valid page
+      if (currentPage > computedMaxPage && safeTotalCount > 0) {
+        setTotalManagersCount(safeTotalCount);
+        setLoading(false);
+        const params = new URLSearchParams(searchParams.toString());
+        params.set('page', String(computedMaxPage));
+        router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+        return;
+      }
+
       const rows = (lbData as LeaderboardRow[]) ?? [];
       setPageLeaderboardRows(rows);
-      setTotalManagersCount(count ?? 0);
+      setTotalManagersCount(safeTotalCount);
 
       if (rows.length > 0) {
         const userIdsOnPage = rows.map((r) => r.user_id);
@@ -615,10 +632,10 @@ function LeaderboardContent() {
           setCurrentUserProfile((prev) =>
             prev
               ? {
-                  ...prev,
-                  daily_streak: newStreak,
-                  last_daily_claim: new Date().toISOString(),
-                }
+                ...prev,
+                daily_streak: newStreak,
+                last_daily_claim: new Date().toISOString(),
+              }
               : null
           );
         }}
@@ -652,11 +669,10 @@ function LeaderboardContent() {
           <button
             type="button"
             onClick={() => setSelectedScope('TOTAL')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
-              selectedScope === 'TOTAL'
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${selectedScope === 'TOTAL'
                 ? 'bg-zinc-800 text-emerald-400 shadow'
                 : 'text-zinc-400 hover:text-zinc-200'
-            }`}
+              }`}
           >
             Total
           </button>
@@ -665,11 +681,10 @@ function LeaderboardContent() {
               key={gw.id}
               type="button"
               onClick={() => setSelectedScope(gw.id)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                selectedScope === gw.id
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${selectedScope === gw.id
                   ? 'bg-zinc-800 text-emerald-400 shadow'
                   : 'text-zinc-400 hover:text-zinc-200'
-              }`}
+                }`}
             >
               {gw.is_playoffs ? 'Playoffs' : `Day ${gw.number}`}
             </button>
@@ -756,11 +771,10 @@ function LeaderboardContent() {
                     <tr
                       key={row.userId}
                       onClick={() => router.push(`/profile/${row.userId}`)}
-                      className={`group cursor-pointer transition-colors ${
-                        isMe
+                      className={`group cursor-pointer transition-colors ${isMe
                           ? 'bg-emerald-500/5 hover:bg-emerald-500/10'
                           : 'hover:bg-zinc-800/50'
-                      }`}
+                        }`}
                     >
                       <td className="py-3.5 px-4 whitespace-nowrap">
                         {renderRankCell(row.rank)}
