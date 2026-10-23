@@ -1,32 +1,37 @@
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import {
   ArrowLeftRight,
-  Clock,
   AlertTriangle,
   CheckCircle2,
   RefreshCw,
   Sparkles,
+  Calendar,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, isPreSeasonNow } from '@/lib/config';
 import RoleBadge from '@/components/RoleBadge';
+import CountdownTimer from '@/components/CountdownTimer';
 import TeamFixturesTooltip from '@/components/TeamFixturesTooltip';
+import StageFixturesSchedule from '@/components/StageFixturesSchedule';
 import type { Player, Gameweek, UserRoster, Fixture } from '@/types/fantasy';
-
 
 type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
 
 export default function TransfersPage() {
   const supabase = getSupabaseBrowserClient();
+  const scheduleSectionRef = useRef<HTMLDivElement | null>(null);
 
   const [userId, setUserId] = useState<string | null>(null);
+  const [userBaseBudget, setUserBaseBudget] = useState<number>(100.0);
+  const [playoffBonusApplied, setPlayoffBonusApplied] =
+    useState<boolean>(false);
+
+  const [gameweeks, setGameweeks] = useState<Gameweek[]>([]);
   const [activeGw, setActiveGw] = useState<Gameweek | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
-  const [userBaseBudget, setUserBaseBudget] = useState<number>(100.0);
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
-  const [playoffBonusApplied, setPlayoffBonusApplied] = useState<boolean>(false);
 
   const [originalSlots, setOriginalSlots] = useState<
     Record<SlotKey, Player | null>
@@ -50,10 +55,7 @@ export default function TransfersPage() {
   const [activeSlotToSwap, setActiveSlotToSwap] = useState<SlotKey | null>(
     null
   );
-  const [countdownText, setCountdownText] = useState<string>('Loading...');
   const [isLocked, setIsLocked] = useState<boolean>(false);
-
-  // Initialized with a static boolean so Next.js static prerendering never calls Date.now()
   const [isPreSeason, setIsPreSeason] = useState<boolean>(true);
 
   const [showPenaltyModal, setShowPenaltyModal] = useState<boolean>(false);
@@ -63,49 +65,22 @@ export default function TransfersPage() {
     text: string;
   } | null>(null);
 
-  // Client-only evaluation of Date.now() for Pre-Season check & Live Countdown Timer
+  // Client-only evaluation of Pre-Season & Lock state
   useEffect(() => {
-    const targetMs = new Date(
-      FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE
-    ).getTime();
-
-    const updateTimer = () => {
+    const checkTimeState = () => {
       setIsPreSeason(isPreSeasonNow());
-
-      if (Number.isNaN(targetMs)) {
-        setCountdownText('INVALID DATE CONFIG');
-        return;
+      if (activeGw) {
+        const lockMs = new Date(activeGw.lock_time).getTime();
+        setIsLocked(
+          Date.now() >= lockMs || activeGw.status === 'COMPLETED'
+        );
       }
-
-      const diff = targetMs - Date.now();
-
-      if (diff <= 0) {
-        setIsLocked(true);
-        setCountdownText('LINEUPS LOCKED');
-        return;
-      }
-
-      setIsLocked(false);
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
-      const mins = Math.floor((diff / 1000 / 60) % 60);
-      const secs = Math.floor((diff / 1000) % 60);
-
-      setCountdownText(
-        `${days > 0 ? `${days}d ` : ''}${String(hours).padStart(
-          2,
-          '0'
-        )}h : ${String(mins).padStart(2, '0')}m : ${String(secs).padStart(
-          2,
-          '0'
-        )}s`
-      );
     };
 
-    updateTimer();
-    const interval = setInterval(updateTimer, 1000);
-    return () => clearInterval(interval);
-  }, []);
+    checkTimeState();
+    const timer = setInterval(checkTimeState, 1000);
+    return () => clearInterval(timer);
+  }, [activeGw]);
 
   useEffect(() => {
     async function loadTransferState() {
@@ -133,29 +108,13 @@ export default function TransfersPage() {
             .order('match_time', { ascending: true }),
         ]);
 
-      setFixtures((fixtureData as Fixture[]) ?? []);
-
-      if (user) {
-        const { data: prof } = await supabase
-          .from('profiles')
-          .select('personal_budget, playoff_bonus_applied')
-          .eq('id', user.id)
-          .maybeSingle();
-        if (prof?.personal_budget) {
-          setUserBaseBudget(Number(prof.personal_budget));
-        }
-        if (prof?.playoff_bonus_applied !== undefined) {
-          setPlayoffBonusApplied(Boolean(prof.playoff_bonus_applied));
-        }
-      }
-
       let gws = (gwData as Gameweek[]) ?? [];
       if (gws.length === 0) {
         const { data: createdGw } = await supabase
           .from('gameweeks')
           .insert({
             number: 1,
-            name: 'Gameweek 1 - Day 1',
+            name: 'Day 1 - Stage 3',
             lock_time: FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE,
             is_playoffs: false,
             status: 'ACTIVE',
@@ -164,6 +123,9 @@ export default function TransfersPage() {
           .single();
         if (createdGw) gws = [createdGw as Gameweek];
       }
+
+      setGameweeks(gws);
+      setFixtures((fixtureData as Fixture[]) ?? []);
 
       const currentGw =
         gws.find((g) => g.status === 'ACTIVE') ??
@@ -174,6 +136,21 @@ export default function TransfersPage() {
       setActiveGw(currentGw);
       const allPlayers = (playerData as Player[]) ?? [];
       setPlayers(allPlayers);
+
+      if (user) {
+        const { data: profData } = await supabase
+          .from('profiles')
+          .select('personal_budget, playoff_bonus_applied')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (profData?.personal_budget !== undefined) {
+          setUserBaseBudget(Number(profData.personal_budget));
+        }
+        if (profData?.playoff_bonus_applied !== undefined) {
+          setPlayoffBonusApplied(Boolean(profData.playoff_bonus_applied));
+        }
+      }
 
       if (user && currentGw) {
         const { data: rosters } = await supabase
@@ -208,7 +185,6 @@ export default function TransfersPage() {
     loadTransferState();
   }, [supabase]);
 
-  // Pre-Season = Unlimited Free Transfers (Before GW1 Lock or during GW1 setup)
   const isUnlimitedFreeWindow = useMemo(() => {
     return isPreSeason || activeGw?.number === 1;
   }, [isPreSeason, activeGw]);
@@ -221,7 +197,6 @@ export default function TransfersPage() {
     return FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS;
   }, [isUnlimitedFreeWindow, activeGw]);
 
-  // Calculate how many players differ between originalSlots and draftSlots
   const pendingChangesCount = useMemo(() => {
     const origIds = new Set(
       Object.values(originalSlots)
@@ -241,7 +216,6 @@ export default function TransfersPage() {
     return diffCount;
   }, [originalSlots, draftSlots]);
 
-  // In Pre-Season, transfers_used stays 0 and extraPaidTransfers is strictly 0
   const totalTransfersAfterCommit = isUnlimitedFreeWindow
     ? 0
     : alreadyUsedTransfers + pendingChangesCount;
@@ -254,9 +228,12 @@ export default function TransfersPage() {
     ? 0
     : Math.max(0, totalTransfersAfterCommit - freeTransferAllowance);
 
-  const totalPointHit =
-    extraPaidTransfers * FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS;
+  const penaltyPerTransfer = Math.abs(
+    Number(FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS)
+  );
+  const totalPointHit = extraPaidTransfers * penaltyPerTransfer;
 
+  // Dynamic Personal Budget + Relative Playoff Bonus (+$5.0M)
   const maxBudget = useMemo(() => {
     const relativePlayoffBonus =
       activeGw?.is_playoffs && !playoffBonusApplied
@@ -307,7 +284,6 @@ export default function TransfersPage() {
 
     setSaving(true);
 
-    // Send ONLY the 5-player UUID array; backend calculates transfers_used
     const newRosterIds = [
       draftSlots.tank.id,
       draftSlots.dps1.id,
@@ -335,8 +311,9 @@ export default function TransfersPage() {
         type: 'success',
         text: isUnlimitedFreeWindow
           ? 'Pre-Season lineup updated! (0 point penalty)'
-          : `Transfers confirmed! Server recorded ${savedRecord?.transfers_used ?? 0
-          } total transfer(s) used this Gameweek.`,
+          : `Transfers confirmed! Server recorded ${
+              savedRecord?.transfers_used ?? 0
+            } total transfer(s) used today.`,
       });
     }
   };
@@ -371,12 +348,12 @@ export default function TransfersPage() {
         <div className="rounded-2xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-zinc-900 px-5 py-3.5 flex items-center gap-3">
           <Sparkles className="w-5 h-5 text-emerald-400 shrink-0" />
           <p className="text-xs sm:text-sm font-bold text-emerald-200">
-            PRE-SEASON OPEN: Transfers are{' '}
+            STAGE 3 PRE-SEASON OPEN: Transfers are{' '}
             <span className="text-white underline">
               100% Free and Unlimited
             </span>{' '}
-            until the Matchday 1 Lock! Experiment with your roster with zero
-            point penalties.
+            until the Day 1 Lock! Experiment with your roster with zero point
+            penalties.
           </p>
         </div>
       )}
@@ -386,40 +363,30 @@ export default function TransfersPage() {
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
           <div>
             <span className="text-xs font-extrabold uppercase tracking-wider text-orange-400">
-              {activeGw?.name ?? 'Transfers Hub'}
+              {activeGw?.name ?? 'Stage 3 Transfers Hub'}
             </span>
             <h1 className="text-2xl sm:text-3xl font-black text-white mt-1">
-              DAILY TRANSFERS & LOCK HUB
+              DAILY TRANSFERS &amp; LOCK HUB
             </h1>
             <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-              Click any starter below to test swaps in your local draft, then
-              confirm before the deadline lock.
+              Click any starter below to test swaps in your local draft, or
+              check the Stage 3 Fixtures Schedule below before locking in.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-4">
-            {/* Live Countdown Box */}
-            <div className="bg-zinc-950/90 border border-zinc-800 px-4 py-3 rounded-xl flex items-center gap-3">
-              <Clock
-                className={`w-5 h-5 ${isLocked ? 'text-rose-400' : 'text-orange-400'
-                  }`}
-              />
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-                  Lock Countdown
-                </p>
-                <p className="text-sm font-black font-mono text-white">
-                  {countdownText}
-                </p>
-              </div>
-            </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Live Dynamic Countdown Component */}
+            <CountdownTimer
+              lockTime={activeGw?.lock_time ?? null}
+              dayName={activeGw ? `Day ${activeGw.number}` : 'Day 1'}
+            />
 
             {/* Free Transfers Counter */}
-            <div className="bg-zinc-950/90 border border-zinc-800 px-4 py-3 rounded-xl">
+            <div className="bg-zinc-950/90 border border-zinc-800 px-4 py-2.5 rounded-xl">
               <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
                 Free Transfers Remaining
               </p>
-              <p className="text-sm font-black text-emerald-400">
+              <p className="text-xs sm:text-sm font-black text-emerald-400">
                 {isUnlimitedFreeWindow
                   ? 'UNLIMITED (Pre-Season)'
                   : `${freeTransfersRemaining} Free`}
@@ -430,16 +397,30 @@ export default function TransfersPage() {
                 )}
               </p>
             </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                scheduleSectionRef.current?.scrollIntoView({
+                  behavior: 'smooth',
+                })
+              }
+              className="inline-flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 font-bold text-xs px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer"
+            >
+              <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+              Stage 3 Schedule ↓
+            </button>
           </div>
         </div>
       </div>
 
       {statusMsg && (
         <div
-          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${statusMsg.type === 'success'
-            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-            }`}
+          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${
+            statusMsg.type === 'success'
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+              : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+          }`}
         >
           {statusMsg.type === 'success' ? (
             <CheckCircle2 className="w-4 h-4" />
@@ -459,10 +440,11 @@ export default function TransfersPage() {
               1. Select a Player to Swap Out
             </h2>
             <span
-              className={`text-xs font-bold ${draftCost > maxBudget ? 'text-rose-400' : 'text-zinc-400'
-                }`}
+              className={`text-xs font-bold ${
+                draftCost > maxBudget ? 'text-rose-400' : 'text-zinc-400'
+              }`}
             >
-              Budget: ${draftCost.toFixed(1)}M / ${maxBudget.toFixed(0)}M
+              Budget: ${draftCost.toFixed(1)}M / ${maxBudget.toFixed(1)}M
             </span>
           </div>
 
@@ -486,12 +468,13 @@ export default function TransfersPage() {
                 <div
                   key={slot.key}
                   onClick={() => !isLocked && setActiveSlotToSwap(slot.key)}
-                  className={`rounded-xl border p-4 flex items-center justify-between cursor-pointer transition-all ${isSelectedForSwap
-                    ? 'border-orange-500 bg-orange-500/10'
-                    : isModified
+                  className={`rounded-xl border p-4 flex items-center justify-between cursor-pointer transition-all ${
+                    isSelectedForSwap
+                      ? 'border-orange-500 bg-orange-500/10'
+                      : isModified
                       ? 'border-emerald-500/40 bg-emerald-500/5'
                       : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700'
-                    }`}
+                  }`}
                 >
                   <div className="flex items-center gap-3">
                     <RoleBadge role={slot.role} size="sm" />
@@ -534,7 +517,7 @@ export default function TransfersPage() {
                 setActiveSlotToSwap(null);
               }}
               disabled={pendingChangesCount === 0}
-              className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-400 hover:text-white disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-400 hover:text-white disabled:opacity-40 cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" /> Reset Pending Swaps
             </button>
@@ -548,7 +531,7 @@ export default function TransfersPage() {
                 pendingChangesCount === 0 ||
                 draftCost > maxBudget
               }
-              className="bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-5 py-2.5 rounded-xl transition-all"
+              className="bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-5 py-2.5 rounded-xl transition-all cursor-pointer"
             >
               {saving
                 ? 'Committing...'
@@ -576,7 +559,7 @@ export default function TransfersPage() {
                   key={candidate.id}
                   className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-3.5 flex items-center justify-between hover:border-zinc-700"
                 >
-                  <div className="space-y-1">
+                  <div>
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
                         {candidate.teams?.code}
@@ -585,8 +568,10 @@ export default function TransfersPage() {
                         {candidate.name}
                       </p>
                     </div>
-                    <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
-                      <span>{candidate.teams?.name} • Max {maxPerTeam}/team</span>
+                    <div className="flex items-center gap-1.5 text-[11px] text-zinc-400 mt-0.5">
+                      <span>
+                        {candidate.teams?.name} • Max {maxPerTeam}/team
+                      </span>
                       <TeamFixturesTooltip
                         teamId={candidate.team_id}
                         teamCode={candidate.teams?.code}
@@ -608,7 +593,7 @@ export default function TransfersPage() {
                           [activeSlotToSwap]: candidate,
                         }))
                       }
-                      className="bg-orange-500 hover:bg-orange-400 text-zinc-950 font-extrabold text-xs px-3 py-1.5 rounded-lg"
+                      className="bg-orange-500 hover:bg-orange-400 text-zinc-950 font-extrabold text-xs px-3 py-1.5 rounded-lg cursor-pointer"
                     >
                       Select
                     </button>
@@ -620,7 +605,16 @@ export default function TransfersPage() {
         </div>
       </div>
 
-      {/* Point Penalty Warning Modal (Only triggers after GW1 lock) */}
+      {/* Stage 3 Full Matchday Schedule Section */}
+      <div ref={scheduleSectionRef} className="scroll-mt-20">
+        <StageFixturesSchedule
+          gameweeks={gameweeks}
+          fixtures={fixtures}
+          activeGwId={activeGw?.id ?? null}
+        />
+      </div>
+
+      {/* Point Penalty Warning Modal */}
       {showPenaltyModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
           <div className="w-full max-w-md rounded-2xl border border-rose-500/40 bg-[#0d1018] p-6 space-y-4 shadow-2xl">
@@ -639,8 +633,8 @@ export default function TransfersPage() {
               <strong className="text-rose-400">
                 -{totalPointHit} fantasy points
               </strong>{' '}
-              ({FANTASY_CONFIG.TRANSFER_HIT_PENALTY_PTS} pts per extra transfer)
-              from your {activeGw?.name} score.
+              (-{penaltyPerTransfer} pts per extra transfer) from your{' '}
+              {activeGw?.name} score.
             </p>
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
               <button

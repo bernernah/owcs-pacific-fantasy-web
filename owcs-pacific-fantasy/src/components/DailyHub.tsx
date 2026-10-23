@@ -11,6 +11,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { claimDailyBonusAction } from '@/app/actions/dailyBonus';
+import CountdownTimer from '@/components/CountdownTimer';
 import type { Profile } from '@/types/fantasy';
 
 interface DailyHubProps {
@@ -69,8 +70,8 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 sm:p-6 space-y-4 shadow-xl">
-      {/* Daily Lock & Free Transfer Reminder Banner */}
-      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      {/* Daily Lock Reminder + Live Countdown Timer Banner */}
+      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex items-start sm:items-center gap-3">
           <div className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400 shrink-0">
             <BellRing className="w-5 h-5" />
@@ -84,13 +85,17 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
           </p>
         </div>
 
-        <Link
-          href="/transfers"
-          className="inline-flex items-center gap-1.5 self-start sm:self-center bg-zinc-950 hover:bg-zinc-800 text-emerald-400 border border-emerald-500/30 font-extrabold text-xs px-3.5 py-2 rounded-xl shrink-0 transition-colors"
-        >
-          <ArrowLeftRight className="w-3.5 h-3.5" />
-          Daily Transfers
-        </Link>
+        <div className="flex flex-wrap items-center gap-3">
+          <CountdownTimer />
+
+          <Link
+            href="/transfers"
+            className="inline-flex items-center gap-1.5 bg-zinc-950 hover:bg-zinc-800 text-emerald-400 border border-emerald-500/30 font-extrabold text-xs px-3.5 py-2.5 rounded-xl shrink-0 transition-colors"
+          >
+            <ArrowLeftRight className="w-3.5 h-3.5" />
+            Daily Transfers
+          </Link>
+        </div>
       </div>
 
       {/* Daily Check-In Streak Bar */}
