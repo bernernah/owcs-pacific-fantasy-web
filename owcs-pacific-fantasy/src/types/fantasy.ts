@@ -30,6 +30,7 @@ export interface Player {
   created_at: string;
   teams?: Team;
   selected_by_pct?: number;
+  last_price_delta?: number;
 }
 
 export interface PlayerOwnershipRow {
@@ -37,6 +38,9 @@ export interface PlayerOwnershipRow {
   selection_count: number;
   active_rosters_count: number;
   selected_by_pct: number;
+  last_price_delta: number;
+  previous_price: number | null;
+  last_changed_at: string | null;
 }
 
 export interface Gameweek {
@@ -110,6 +114,7 @@ export interface PlayerSeasonStat {
   total_fantasy_points: number;
   avg_points_per_map: number;
   selected_by_pct?: number;
+  last_price_delta?: number;
 }
 
 export interface ExtractedScoreboardRow {
@@ -211,3 +216,13 @@ export interface UserBadge {
   badges?: Badge;
 }
 
+export interface PriceHistoryRow {
+  id: string;
+  player_id: string;
+  gameweek_id: string | null;
+  old_price: number;
+  new_price: number;
+  delta: number;
+  reason: 'AUTOMATED' | 'MANUAL';
+  created_at: string;
+}

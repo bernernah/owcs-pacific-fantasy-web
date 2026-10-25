@@ -24,6 +24,7 @@ import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, SCORING_MULTIPLIERS } from '@/lib/config';
 import RoleBadge from '@/components/RoleBadge';
 import TeamFixturesTooltip from '@/components/TeamFixturesTooltip';
+import PriceTrendBadge from '@/components/PriceTrendBadge';
 import type {
   Player,
   Team,
@@ -170,16 +171,20 @@ export default function MyTeamPage() {
       setTeams((teamData as Team[]) ?? []);
       setFixtures((fixtureData as Fixture[]) ?? []);
 
-      const ownershipMap: Record<string, number> = {};
+      const ownershipMap: Record<string, { pct: number; delta: number }> = {};
       if (ownershipData) {
         for (const row of ownershipData as PlayerOwnershipRow[]) {
-          ownershipMap[row.player_id] = Number(row.selected_by_pct ?? 0);
+          ownershipMap[row.player_id] = {
+            pct: Number(row.selected_by_pct ?? 0),
+            delta: Number(row.last_price_delta ?? 0),
+          };
         }
       }
 
       const allPlayers = ((playerData as Player[]) ?? []).map((p) => ({
         ...p,
-        selected_by_pct: ownershipMap[p.id] ?? 0.0,
+        selected_by_pct: ownershipMap[p.id]?.pct ?? 0.0,
+        last_price_delta: ownershipMap[p.id]?.delta ?? 0.0,
       }));
       setPlayers(allPlayers);
 
@@ -609,17 +614,16 @@ export default function MyTeamPage() {
       <div
         key={slotKey}
         onClick={() => handleSlotClick(slotKey)}
-        className={`relative rounded-2xl border p-4 transition-all flex flex-col justify-between min-h-[160px] cursor-pointer ${
-          isCaptain
-            ? 'bg-gradient-to-b from-amber-500/15 via-zinc-900/95 to-zinc-900 border-amber-400 ring-2 ring-amber-400/30 shadow-xl shadow-amber-500/10'
-            : isTargeted
+        className={`relative rounded-2xl border p-4 transition-all flex flex-col justify-between min-h-[160px] cursor-pointer ${isCaptain
+          ? 'bg-gradient-to-b from-amber-500/15 via-zinc-900/95 to-zinc-900 border-amber-400 ring-2 ring-amber-400/30 shadow-xl shadow-amber-500/10'
+          : isTargeted
             ? 'bg-orange-500/10 border-orange-500 ring-2 ring-orange-500/30 shadow-xl'
             : player
-            ? isChangedInDraft
-              ? 'bg-zinc-900/95 border-amber-500/60 shadow-lg'
-              : 'bg-zinc-900/90 border-zinc-700/90 hover:border-orange-500/50 shadow-lg'
-            : 'bg-zinc-950/60 border-dashed border-zinc-800 hover:border-orange-500/60'
-        }`}
+              ? isChangedInDraft
+                ? 'bg-zinc-900/95 border-amber-500/60 shadow-lg'
+                : 'bg-zinc-900/90 border-zinc-700/90 hover:border-orange-500/50 shadow-lg'
+              : 'bg-zinc-950/60 border-dashed border-zinc-800 hover:border-orange-500/60'
+          }`}
       >
         <div className="flex items-center justify-between gap-1">
           <div className="flex items-center gap-1.5">
@@ -686,9 +690,12 @@ export default function MyTeamPage() {
         )}
 
         <div className="pt-2.5 border-t border-zinc-800/80 flex items-center justify-between text-xs">
-          <span className="font-black text-emerald-400">
-            {player ? `$${Number(player.price).toFixed(1)}M` : '—'}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="font-black text-emerald-400">
+              {player ? `$${Number(player.price).toFixed(1)}M` : '-'}
+            </span>
+            {player && <PriceTrendBadge delta={player.last_price_delta} />}
+          </div>
 
           {player ? (
             <button
@@ -699,11 +706,10 @@ export default function MyTeamPage() {
                 setFeedback(null);
                 setDraftCaptainId(player.id);
               }}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
-                isCaptain
-                  ? 'bg-amber-400 text-zinc-950 shadow shadow-amber-400/30'
-                  : 'bg-zinc-800 hover:bg-amber-400/20 text-zinc-300 hover:text-amber-300 border border-zinc-700'
-              }`}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${isCaptain
+                ? 'bg-amber-400 text-zinc-950 shadow shadow-amber-400/30'
+                : 'bg-zinc-800 hover:bg-amber-400/20 text-zinc-300 hover:text-amber-300 border border-zinc-700'
+                }`}
               title="Set as 1.5x Points Captain"
             >
               <span className="w-3.5 h-3.5 rounded-full bg-black/20 flex items-center justify-center font-black">
@@ -834,9 +840,8 @@ export default function MyTeamPage() {
               Remaining Budget
             </p>
             <p
-              className={`text-xl font-black mt-0.5 ${
-                remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
-              }`}
+              className={`text-xl font-black mt-0.5 ${remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
+                }`}
             >
               ${remainingBudget.toFixed(1)}M{' '}
               <span className="text-xs font-semibold text-zinc-500">
@@ -874,11 +879,10 @@ export default function MyTeamPage() {
 
       {feedback && (
         <div
-          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-xs sm:text-sm font-bold ${
-            feedback.type === 'success'
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-              : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-          }`}
+          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-xs sm:text-sm font-bold ${feedback.type === 'success'
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+            }`}
         >
           {feedback.type === 'success' ? (
             <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -965,11 +969,10 @@ export default function MyTeamPage() {
                   setRoleFilter(r);
                   if (r === 'ALL') setActiveSlotKey(null);
                 }}
-                className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                  roleFilter === r
-                    ? 'bg-orange-500 text-zinc-950'
-                    : 'bg-zinc-900 text-zinc-400 hover:text-white border border-zinc-800'
-                }`}
+                className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${roleFilter === r
+                  ? 'bg-orange-500 text-zinc-950'
+                  : 'bg-zinc-900 text-zinc-400 hover:text-white border border-zinc-800'
+                  }`}
               >
                 {r}
               </button>
@@ -1041,8 +1044,8 @@ export default function MyTeamPage() {
                 : null;
               const effectiveTeamCount =
                 activeSlotPlayer &&
-                activeSlotPlayer.role === player.role &&
-                activeSlotPlayer.team_id === player.team_id
+                  activeSlotPlayer.role === player.role &&
+                  activeSlotPlayer.team_id === player.team_id
                   ? currentTeamCount - 1
                   : currentTeamCount;
 
@@ -1052,11 +1055,10 @@ export default function MyTeamPage() {
               return (
                 <div
                   key={player.id}
-                  className={`rounded-xl border p-4 flex flex-col justify-between transition-all ${
-                    alreadyPicked
-                      ? 'border-orange-500/40 bg-orange-500/5 opacity-60'
-                      : 'border-zinc-800/90 bg-zinc-900/60 hover:border-zinc-700'
-                  }`}
+                  className={`rounded-xl border p-4 flex flex-col justify-between transition-all ${alreadyPicked
+                    ? 'border-orange-500/40 bg-orange-500/5 opacity-60'
+                    : 'border-zinc-800/90 bg-zinc-900/60 hover:border-zinc-700'
+                    }`}
                 >
                   <div>
                     <div className="flex items-center justify-between gap-2 mb-2">
@@ -1085,9 +1087,12 @@ export default function MyTeamPage() {
                   </div>
 
                   <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between">
-                    <span className="text-sm font-black text-emerald-400">
-                      ${Number(player.price).toFixed(1)}M
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-black text-emerald-400">
+                        ${Number(player.price).toFixed(1)}M
+                      </span>
+                      <PriceTrendBadge delta={player.last_price_delta} />
+                    </div>
 
                     <button
                       type="button"
@@ -1095,19 +1100,18 @@ export default function MyTeamPage() {
                         handleSelectPlayerIntoDraft(player, activeSlotKey)
                       }
                       disabled={alreadyPicked || teamCapReached || isLocked}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                        alreadyPicked
-                          ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                          : teamCapReached
+                      className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${alreadyPicked
+                        ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                        : teamCapReached
                           ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
                           : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
-                      }`}
+                        }`}
                     >
                       {alreadyPicked
                         ? 'In Draft'
                         : teamCapReached
-                        ? 'Team Max'
-                        : '+ Select'}
+                          ? 'Team Max'
+                          : '+ Select'}
                     </button>
                   </div>
                 </div>
@@ -1140,9 +1144,8 @@ export default function MyTeamPage() {
                 Draft Budget Remaining
               </span>
               <span
-                className={`text-sm sm:text-base font-black ${
-                  remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
-                }`}
+                className={`text-sm sm:text-base font-black ${remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
+                  }`}
               >
                 ${remainingBudget.toFixed(1)}M{' '}
                 <span className="text-xs text-zinc-500 font-normal">
@@ -1256,7 +1259,7 @@ export default function MyTeamPage() {
                   const currentTeamCount = teamCounts[player.team_id] ?? 0;
                   const effectiveTeamCount =
                     currentSlotPlayer &&
-                    currentSlotPlayer.team_id === player.team_id
+                      currentSlotPlayer.team_id === player.team_id
                       ? currentTeamCount - 1
                       : currentTeamCount;
                   const teamCapReached =
@@ -1294,28 +1297,30 @@ export default function MyTeamPage() {
                       </div>
 
                       <div className="flex items-center gap-3">
-                        <span className="text-sm font-black text-emerald-400">
-                          ${Number(player.price).toFixed(1)}M
-                        </span>
+                        <div className="flex items-center gap-2.5">
+                          <PriceTrendBadge delta={player.last_price_delta} />
+                          <span className="text-sm font-black text-emerald-400">
+                            ${Number(player.price).toFixed(1)}M
+                          </span>
+                        </div>
                         <button
                           type="button"
                           disabled={alreadyPicked || teamCapReached}
                           onClick={() =>
                             handleSelectPlayerIntoDraft(player, activeSlotKey)
                           }
-                          className={`px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
-                            alreadyPicked
-                              ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
-                              : teamCapReached
+                          className={`px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${alreadyPicked
+                            ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                            : teamCapReached
                               ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
                               : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
-                          }`}
+                            }`}
                         >
                           {alreadyPicked
                             ? 'Selected'
                             : teamCapReached
-                            ? 'Team Max'
-                            : 'Select'}
+                              ? 'Team Max'
+                              : 'Select'}
                         </button>
                       </div>
                     </div>

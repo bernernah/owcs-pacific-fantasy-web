@@ -16,6 +16,7 @@ import RoleBadge from '@/components/RoleBadge';
 import CountdownTimer from '@/components/CountdownTimer';
 import TeamFixturesTooltip from '@/components/TeamFixturesTooltip';
 import StageFixturesSchedule from '@/components/StageFixturesSchedule';
+import PriceTrendBadge from '@/components/PriceTrendBadge';
 import type {
   Player,
   Gameweek,
@@ -157,16 +158,20 @@ export default function TransfersPage() {
 
       setActiveGw(currentGw);
 
-      const ownershipMap: Record<string, number> = {};
+      const ownershipMap: Record<string, { pct: number; delta: number }> = {};
       if (ownershipData) {
         for (const row of ownershipData as PlayerOwnershipRow[]) {
-          ownershipMap[row.player_id] = Number(row.selected_by_pct ?? 0);
+          ownershipMap[row.player_id] = {
+            pct: Number(row.selected_by_pct ?? 0),
+            delta: Number(row.last_price_delta ?? 0),
+          };
         }
       }
 
       const allPlayers = ((playerData as Player[]) ?? []).map((p) => ({
         ...p,
-        selected_by_pct: ownershipMap[p.id] ?? 0.0,
+        selected_by_pct: ownershipMap[p.id]?.pct ?? 0.0,
+        last_price_delta: ownershipMap[p.id]?.delta ?? 0.0,
       }));
       setPlayers(allPlayers);
 
@@ -357,9 +362,8 @@ export default function TransfersPage() {
         type: 'success',
         text: isUnlimitedFreeWindow
           ? 'Pre-Season lineup updated! (0 point penalty)'
-          : `Transfers confirmed! Server recorded ${
-              savedRecord?.transfers_used ?? 0
-            } total transfer(s) used today.`,
+          : `Transfers confirmed! Server recorded ${savedRecord?.transfers_used ?? 0
+          } total transfer(s) used today.`,
       });
     }
   };
@@ -483,11 +487,10 @@ export default function TransfersPage() {
 
       {statusMsg && (
         <div
-          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${
-            statusMsg.type === 'success'
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-              : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-          }`}
+          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${statusMsg.type === 'success'
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+            }`}
         >
           {statusMsg.type === 'success' ? (
             <CheckCircle2 className="w-4 h-4" />
@@ -507,9 +510,8 @@ export default function TransfersPage() {
               1. Select a Player to Swap Out
             </h2>
             <span
-              className={`text-xs font-bold ${
-                draftCost > maxBudget ? 'text-rose-400' : 'text-zinc-400'
-              }`}
+              className={`text-xs font-bold ${draftCost > maxBudget ? 'text-rose-400' : 'text-zinc-400'
+                }`}
             >
               Budget: ${draftCost.toFixed(1)}M / ${maxBudget.toFixed(1)}M
             </span>
@@ -535,13 +537,12 @@ export default function TransfersPage() {
                 <div
                   key={slot.key}
                   onClick={() => !isLocked && setActiveSlotToSwap(slot.key)}
-                  className={`rounded-xl border p-4 flex items-center justify-between cursor-pointer transition-all ${
-                    isSelectedForSwap
-                      ? 'border-orange-500 bg-orange-500/10'
-                      : isModified
+                  className={`rounded-xl border p-4 flex items-center justify-between cursor-pointer transition-all ${isSelectedForSwap
+                    ? 'border-orange-500 bg-orange-500/10'
+                    : isModified
                       ? 'border-emerald-500/40 bg-emerald-500/5'
                       : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700'
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center gap-3">
                     <RoleBadge role={slot.role} size="sm" />
@@ -568,7 +569,10 @@ export default function TransfersPage() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-3">
+                    {current && (
+                      <PriceTrendBadge delta={current.last_price_delta} />
+                    )}
                     <span className="text-sm font-black text-emerald-400">
                       ${current ? Number(current.price).toFixed(1) : '0.0'}M
                     </span>
@@ -682,7 +686,8 @@ export default function TransfersPage() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <PriceTrendBadge delta={candidate.last_price_delta} />
                     <span className="text-xs font-black text-emerald-400">
                       ${Number(candidate.price).toFixed(1)}M
                     </span>
