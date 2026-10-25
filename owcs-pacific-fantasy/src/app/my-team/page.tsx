@@ -18,6 +18,7 @@ import {
   Crown,
   Trophy,
   TrendingUp,
+  ArrowUpDown,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, SCORING_MULTIPLIERS } from '@/lib/config';
@@ -30,9 +31,15 @@ import type {
   UserRoster,
   PlayerRole,
   Fixture,
+  PlayerOwnershipRow,
 } from '@/types/fantasy';
 
 type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
+type MarketSortOption =
+  | 'PRICE_DESC'
+  | 'PRICE_ASC'
+  | 'OWNERSHIP_DESC'
+  | 'OWNERSHIP_ASC';
 
 const SLOT_METADATA: Record<
   SlotKey,
@@ -54,7 +61,8 @@ export default function MyTeamPage() {
   const [userRank, setUserRank] = useState<number | null>(null);
   const [userTotalPoints, setUserTotalPoints] = useState<number>(0);
   const [userBaseBudget, setUserBaseBudget] = useState<number>(100.0);
-  const [playoffBonusApplied, setPlayoffBonusApplied] = useState<boolean>(false);
+  const [playoffBonusApplied, setPlayoffBonusApplied] =
+    useState<boolean>(false);
 
   const [activeGw, setActiveGw] = useState<Gameweek | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -84,9 +92,11 @@ export default function MyTeamPage() {
   const [activeSlotKey, setActiveSlotKey] = useState<SlotKey | null>(null);
   const [isRoleModalOpen, setIsRoleModalOpen] = useState<boolean>(false);
 
+  // Market Filter & Sort Controls
   const [roleFilter, setRoleFilter] = useState<PlayerRole | 'ALL'>('ALL');
   const [teamFilter, setTeamFilter] = useState<string>('ALL');
   const [maxPriceFilter, setMaxPriceFilter] = useState<number>(50);
+  const [sortOption, setSortOption] = useState<MarketSortOption>('PRICE_DESC');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   const [isLocked, setIsLocked] = useState<boolean>(false);
@@ -109,6 +119,7 @@ export default function MyTeamPage() {
         { data: gwData },
         { data: teamData },
         { data: playerData },
+        { data: ownershipData },
         { data: fixtureData },
       ] = await Promise.all([
         supabase
@@ -121,6 +132,7 @@ export default function MyTeamPage() {
           .select('*, teams(*)')
           .eq('is_active', true)
           .order('price', { ascending: false }),
+        supabase.from('player_ownership_view').select('*'),
         supabase
           .from('fixtures')
           .select(
@@ -136,7 +148,7 @@ export default function MyTeamPage() {
           .from('gameweeks')
           .insert({
             number: 1,
-            name: 'Matchday 1 - Day 1',
+            name: 'Day 1 - Stage 3',
             lock_time: FANTASY_CONFIG.NEXT_TRANSFER_LOCK_DEADLINE,
             is_playoffs: false,
             status: 'ACTIVE',
@@ -156,9 +168,20 @@ export default function MyTeamPage() {
 
       setActiveGw(currentGw);
       setTeams((teamData as Team[]) ?? []);
-      const allPlayers = (playerData as Player[]) ?? [];
-      setPlayers(allPlayers);
       setFixtures((fixtureData as Fixture[]) ?? []);
+
+      const ownershipMap: Record<string, number> = {};
+      if (ownershipData) {
+        for (const row of ownershipData as PlayerOwnershipRow[]) {
+          ownershipMap[row.player_id] = Number(row.selected_by_pct ?? 0);
+        }
+      }
+
+      const allPlayers = ((playerData as Player[]) ?? []).map((p) => ({
+        ...p,
+        selected_by_pct: ownershipMap[p.id] ?? 0.0,
+      }));
+      setPlayers(allPlayers);
 
       if (user) {
         const [
@@ -188,11 +211,11 @@ export default function MyTeamPage() {
         } else if (lbData?.username) {
           setUsername(lbData.username);
         }
-        if (profData?.personal_budget) {
+        if (profData?.personal_budget !== undefined) {
           setUserBaseBudget(Number(profData.personal_budget));
-          if (profData?.playoff_bonus_applied !== undefined) {
-            setPlayoffBonusApplied(Boolean(profData.playoff_bonus_applied));
-          }
+        }
+        if (profData?.playoff_bonus_applied !== undefined) {
+          setPlayoffBonusApplied(Boolean(profData.playoff_bonus_applied));
         }
         if (lbData) {
           setUserRank(Number(lbData.rank));
@@ -249,14 +272,13 @@ export default function MyTeamPage() {
     );
   }, [activeGw]);
 
-  // Dynamic Personal Budget + $5.0M Playoff Boost
   const maxBudget = useMemo(() => {
-  const relativePlayoffBonus =
-    activeGw?.is_playoffs && !playoffBonusApplied
-      ? FANTASY_CONFIG.PLAYOFF_BUDGET_BONUS
-      : 0.0;
-  return Number((userBaseBudget + relativePlayoffBonus).toFixed(1));
-}, [userBaseBudget, activeGw, playoffBonusApplied]);
+    const relativePlayoffBonus =
+      activeGw?.is_playoffs && !playoffBonusApplied
+        ? FANTASY_CONFIG.PLAYOFF_BUDGET_BONUS
+        : 0.0;
+    return Number((userBaseBudget + relativePlayoffBonus).toFixed(1));
+  }, [userBaseBudget, activeGw, playoffBonusApplied]);
 
   const maxPerTeam = activeGw?.is_playoffs
     ? FANTASY_CONFIG.PLAYOFF_WILDCARD_MAX_PER_TEAM
@@ -300,6 +322,25 @@ export default function MyTeamPage() {
     const s = ['th', 'st', 'nd', 'rd'];
     const v = n % 100;
     return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  };
+
+  const refreshLiveOwnership = async () => {
+    const { data: ownershipData } = await supabase
+      .from('player_ownership_view')
+      .select('*');
+    if (!ownershipData) return;
+
+    const ownershipMap: Record<string, number> = {};
+    for (const row of ownershipData as PlayerOwnershipRow[]) {
+      ownershipMap[row.player_id] = Number(row.selected_by_pct ?? 0);
+    }
+
+    setPlayers((prev) =>
+      prev.map((p) => ({
+        ...p,
+        selected_by_pct: ownershipMap[p.id] ?? 0.0,
+      }))
+    );
   };
 
   const handleSlotClick = (slotKey: SlotKey) => {
@@ -504,11 +545,13 @@ export default function MyTeamPage() {
         type: 'success',
         message: `Lineup & Captain (${draftCaptainPlayer?.name}) securely verified and saved for ${activeGw.name}!`,
       });
+      refreshLiveOwnership();
     }
   };
 
+  // Filter & Sort Market Players (Price or Live Selected %)
   const filteredMarket = useMemo(() => {
-    return players.filter((p) => {
+    const filtered = players.filter((p) => {
       if (p.teams?.is_eliminated) return false;
       if (roleFilter !== 'ALL' && p.role !== roleFilter) return false;
       if (teamFilter !== 'ALL' && p.team_id !== teamFilter) return false;
@@ -522,7 +565,33 @@ export default function MyTeamPage() {
       }
       return true;
     });
-  }, [players, roleFilter, teamFilter, maxPriceFilter, searchQuery]);
+
+    return [...filtered].sort((a, b) => {
+      if (sortOption === 'OWNERSHIP_DESC') {
+        const diff =
+          Number(b.selected_by_pct ?? 0) - Number(a.selected_by_pct ?? 0);
+        if (diff !== 0) return diff;
+        return Number(b.price) - Number(a.price);
+      }
+      if (sortOption === 'OWNERSHIP_ASC') {
+        const diff =
+          Number(a.selected_by_pct ?? 0) - Number(b.selected_by_pct ?? 0);
+        if (diff !== 0) return diff;
+        return Number(b.price) - Number(a.price);
+      }
+      if (sortOption === 'PRICE_ASC') {
+        return Number(a.price) - Number(b.price);
+      }
+      return Number(b.price) - Number(a.price);
+    });
+  }, [
+    players,
+    roleFilter,
+    teamFilter,
+    maxPriceFilter,
+    searchQuery,
+    sortOption,
+  ]);
 
   const renderPitchCard = (
     slotKey: SlotKey,
@@ -540,16 +609,17 @@ export default function MyTeamPage() {
       <div
         key={slotKey}
         onClick={() => handleSlotClick(slotKey)}
-        className={`relative rounded-2xl border p-4 transition-all flex flex-col justify-between min-h-[155px] cursor-pointer ${isCaptain
+        className={`relative rounded-2xl border p-4 transition-all flex flex-col justify-between min-h-[160px] cursor-pointer ${
+          isCaptain
             ? 'bg-gradient-to-b from-amber-500/15 via-zinc-900/95 to-zinc-900 border-amber-400 ring-2 ring-amber-400/30 shadow-xl shadow-amber-500/10'
             : isTargeted
-              ? 'bg-orange-500/10 border-orange-500 ring-2 ring-orange-500/30 shadow-xl'
-              : player
-                ? isChangedInDraft
-                  ? 'bg-zinc-900/95 border-amber-500/60 shadow-lg'
-                  : 'bg-zinc-900/90 border-zinc-700/90 hover:border-orange-500/50 shadow-lg'
-                : 'bg-zinc-950/60 border-dashed border-zinc-800 hover:border-orange-500/60'
-          }`}
+            ? 'bg-orange-500/10 border-orange-500 ring-2 ring-orange-500/30 shadow-xl'
+            : player
+            ? isChangedInDraft
+              ? 'bg-zinc-900/95 border-amber-500/60 shadow-lg'
+              : 'bg-zinc-900/90 border-zinc-700/90 hover:border-orange-500/50 shadow-lg'
+            : 'bg-zinc-950/60 border-dashed border-zinc-800 hover:border-orange-500/60'
+        }`}
       >
         <div className="flex items-center justify-between gap-1">
           <div className="flex items-center gap-1.5">
@@ -591,9 +661,14 @@ export default function MyTeamPage() {
 
         {player ? (
           <div className="my-2">
-            <span className="text-[10px] font-extrabold uppercase tracking-wider text-orange-400">
-              {player.teams?.code ?? 'OWCS'}
-            </span>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-extrabold uppercase tracking-wider text-orange-400">
+                {player.teams?.code ?? 'OWCS'}
+              </span>
+              <span className="text-[10px] font-mono font-bold text-zinc-400">
+                Sel: {Number(player.selected_by_pct ?? 0).toFixed(1)}%
+              </span>
+            </div>
             <h4 className="text-base font-black text-white truncate">
               {player.name}
             </h4>
@@ -624,10 +699,11 @@ export default function MyTeamPage() {
                 setFeedback(null);
                 setDraftCaptainId(player.id);
               }}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${isCaptain
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                isCaptain
                   ? 'bg-amber-400 text-zinc-950 shadow shadow-amber-400/30'
                   : 'bg-zinc-800 hover:bg-amber-400/20 text-zinc-300 hover:text-amber-300 border border-zinc-700'
-                }`}
+              }`}
               title="Set as 1.5x Points Captain"
             >
               <span className="w-3.5 h-3.5 rounded-full bg-black/20 flex items-center justify-center font-black">
@@ -655,24 +731,22 @@ export default function MyTeamPage() {
 
   return (
     <div className="space-y-8 pb-24">
-      {/* ====================================================================
-          STEP 1: PROMINENT FRANCHISE RANK, TEAM NAME & TOTAL POINTS HEADER
-      ==================================================================== */}
+      {/* Prominent Franchise Rank, Team Name & Total Points Header */}
       <div className="rounded-2xl border border-zinc-800 bg-gradient-to-r from-zinc-900 via-[#0f1420] to-zinc-900 p-6 shadow-2xl flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2.5">
-            {/* Distinct Global Rank Pill */}
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-amber-400/15 border border-amber-400/40 text-amber-300 shadow-lg shadow-amber-500/10">
               <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
               <span className="text-xs font-black uppercase tracking-wider">
                 Global Rank:{' '}
                 <strong className="text-white text-sm font-mono">
-                  {userRank ? `#${userRank} (${formatOrdinal(userRank)})` : 'Unranked'}
+                  {userRank
+                    ? `#${userRank} (${formatOrdinal(userRank)})`
+                    : 'Unranked'}
                 </strong>
               </span>
             </div>
 
-            {/* Total Season Points Pill */}
             <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
               <TrendingUp className="w-4 h-4 text-emerald-400 shrink-0" />
               <span className="text-xs font-black uppercase tracking-wider">
@@ -718,9 +792,11 @@ export default function MyTeamPage() {
           <Sparkles className="w-5 h-5 text-amber-400 shrink-0" />
           <p className="text-xs sm:text-sm font-bold text-amber-200">
             PLAYOFF WILDCARD ACTIVE: Personal salary cap boosted by{' '}
-            <span className="text-white underline">+$5.0M</span>, up to{' '}
-            <span className="text-white underline">3 players per team</span>,
-            and <span className="text-white underline">3 Free Transfers</span>{' '}
+            <span className="text-white underline">
+              +${FANTASY_CONFIG.PLAYOFF_BUDGET_BONUS.toFixed(1)}M
+            </span>
+            , up to <span className="text-white underline">3 players per team</span>
+            , and <span className="text-white underline">3 Free Transfers</span>{' '}
             available!
           </p>
         </div>
@@ -758,8 +834,9 @@ export default function MyTeamPage() {
               Remaining Budget
             </p>
             <p
-              className={`text-xl font-black mt-0.5 ${remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
-                }`}
+              className={`text-xl font-black mt-0.5 ${
+                remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
+              }`}
             >
               ${remainingBudget.toFixed(1)}M{' '}
               <span className="text-xs font-semibold text-zinc-500">
@@ -797,10 +874,11 @@ export default function MyTeamPage() {
 
       {feedback && (
         <div
-          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-xs sm:text-sm font-bold ${feedback.type === 'success'
+          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-xs sm:text-sm font-bold ${
+            feedback.type === 'success'
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
               : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-            }`}
+          }`}
         >
           {feedback.type === 'success' ? (
             <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -843,7 +921,7 @@ export default function MyTeamPage() {
         </div>
       </div>
 
-      {/* Filterable Player Market Underneath */}
+      {/* Filterable & Sortable Player Market Underneath */}
       <div
         id="player-market"
         ref={marketSectionRef}
@@ -862,12 +940,12 @@ export default function MyTeamPage() {
               )}
             </div>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Experiment freely with combinations—changes stay in your local
-              draft until you click Save Lineup.
+              Live ownership (<strong className="text-zinc-200">Sel %</strong>)
+              reflects active Matchday rosters across the league.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             <div className="relative">
               <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
@@ -887,10 +965,11 @@ export default function MyTeamPage() {
                   setRoleFilter(r);
                   if (r === 'ALL') setActiveSlotKey(null);
                 }}
-                className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${roleFilter === r
+                className={`px-3 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  roleFilter === r
                     ? 'bg-orange-500 text-zinc-950'
                     : 'bg-zinc-900 text-zinc-400 hover:text-white border border-zinc-800'
-                  }`}
+                }`}
               >
                 {r}
               </button>
@@ -922,6 +1001,27 @@ export default function MyTeamPage() {
               <option value={20}>Under $20.0M</option>
               <option value={18.5}>Under $18.5M</option>
             </select>
+
+            {/* Sort By Dropdown (Price or Selected %) */}
+            <div className="relative inline-flex items-center">
+              <ArrowUpDown className="w-3.5 h-3.5 text-orange-400 absolute left-3 pointer-events-none" />
+              <select
+                value={sortOption}
+                onChange={(e) =>
+                  setSortOption(e.target.value as MarketSortOption)
+                }
+                className="bg-zinc-900 border border-zinc-800 rounded-xl pl-8 pr-3 py-2 text-xs font-bold text-white focus:outline-none focus:border-orange-500"
+              >
+                <option value="PRICE_DESC">Sort by: Price (High-Low)</option>
+                <option value="PRICE_ASC">Sort by: Price (Low-High)</option>
+                <option value="OWNERSHIP_DESC">
+                  Sort by: Selected % (High-Low)
+                </option>
+                <option value="OWNERSHIP_ASC">
+                  Sort by: Selected % (Low-High)
+                </option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -941,8 +1041,8 @@ export default function MyTeamPage() {
                 : null;
               const effectiveTeamCount =
                 activeSlotPlayer &&
-                  activeSlotPlayer.role === player.role &&
-                  activeSlotPlayer.team_id === player.team_id
+                activeSlotPlayer.role === player.role &&
+                activeSlotPlayer.team_id === player.team_id
                   ? currentTeamCount - 1
                   : currentTeamCount;
 
@@ -952,17 +1052,23 @@ export default function MyTeamPage() {
               return (
                 <div
                   key={player.id}
-                  className={`rounded-xl border p-4 flex flex-col justify-between transition-all ${alreadyPicked
+                  className={`rounded-xl border p-4 flex flex-col justify-between transition-all ${
+                    alreadyPicked
                       ? 'border-orange-500/40 bg-orange-500/5 opacity-60'
                       : 'border-zinc-800/90 bg-zinc-900/60 hover:border-zinc-700'
-                    }`}
+                  }`}
                 >
                   <div>
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <RoleBadge role={player.role} size="sm" />
-                      <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
-                        {player.teams?.code ?? 'OWCS'}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                          Sel: {Number(player.selected_by_pct ?? 0).toFixed(1)}%
+                        </span>
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                          {player.teams?.code ?? 'OWCS'}
+                        </span>
+                      </div>
                     </div>
                     <p className="text-base font-black text-white">
                       {player.name}
@@ -989,18 +1095,19 @@ export default function MyTeamPage() {
                         handleSelectPlayerIntoDraft(player, activeSlotKey)
                       }
                       disabled={alreadyPicked || teamCapReached || isLocked}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all ${alreadyPicked
+                      className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                        alreadyPicked
                           ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
                           : teamCapReached
-                            ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
-                            : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
-                        }`}
+                          ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
+                          : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
+                      }`}
                     >
                       {alreadyPicked
                         ? 'In Draft'
                         : teamCapReached
-                          ? 'Team Max'
-                          : '+ Select'}
+                        ? 'Team Max'
+                        : '+ Select'}
                     </button>
                   </div>
                 </div>
@@ -1033,8 +1140,9 @@ export default function MyTeamPage() {
                 Draft Budget Remaining
               </span>
               <span
-                className={`text-sm sm:text-base font-black ${remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
-                  }`}
+                className={`text-sm sm:text-base font-black ${
+                  remainingBudget < 0 ? 'text-rose-400' : 'text-emerald-400'
+                }`}
               >
                 ${remainingBudget.toFixed(1)}M{' '}
                 <span className="text-xs text-zinc-500 font-normal">
@@ -1065,7 +1173,7 @@ export default function MyTeamPage() {
               <button
                 type="button"
                 onClick={handleResetDraft}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 Reset Draft
@@ -1076,7 +1184,7 @@ export default function MyTeamPage() {
               type="button"
               onClick={handleSaveSquad}
               disabled={saving || isLocked}
-              className="inline-flex items-center gap-2 bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-5 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 transition-all"
+              className="inline-flex items-center gap-2 bg-orange-500 hover:bg-orange-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider px-5 py-2.5 rounded-xl shadow-lg shadow-orange-500/20 transition-all cursor-pointer"
             >
               <Save className="w-4 h-4" />
               {saving ? 'Saving Lineup...' : 'Save Lineup'}
@@ -1118,7 +1226,7 @@ export default function MyTeamPage() {
                 <button
                   type="button"
                   onClick={() => scrollToMarketWithRole(activeSlotKey)}
-                  className="inline-flex items-center gap-1 text-xs font-bold text-orange-400 hover:underline px-2 py-1"
+                  className="inline-flex items-center gap-1 text-xs font-bold text-orange-400 hover:underline px-2 py-1 cursor-pointer"
                 >
                   <ArrowDownCircle className="w-3.5 h-3.5" /> View in Full
                   Market
@@ -1126,7 +1234,7 @@ export default function MyTeamPage() {
                 <button
                   type="button"
                   onClick={() => setIsRoleModalOpen(false)}
-                  className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800"
+                  className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -1148,7 +1256,7 @@ export default function MyTeamPage() {
                   const currentTeamCount = teamCounts[player.team_id] ?? 0;
                   const effectiveTeamCount =
                     currentSlotPlayer &&
-                      currentSlotPlayer.team_id === player.team_id
+                    currentSlotPlayer.team_id === player.team_id
                       ? currentTeamCount - 1
                       : currentTeamCount;
                   const teamCapReached =
@@ -1164,9 +1272,15 @@ export default function MyTeamPage() {
                           {player.teams?.code ?? 'OWCS'}
                         </span>
                         <div>
-                          <p className="font-bold text-white text-sm">
-                            {player.name}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-bold text-white text-sm">
+                              {player.name}
+                            </p>
+                            <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400">
+                              Sel:{' '}
+                              {Number(player.selected_by_pct ?? 0).toFixed(1)}%
+                            </span>
+                          </div>
                           <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
                             <span>{player.teams?.name}</span>
                             <TeamFixturesTooltip
@@ -1189,18 +1303,19 @@ export default function MyTeamPage() {
                           onClick={() =>
                             handleSelectPlayerIntoDraft(player, activeSlotKey)
                           }
-                          className={`px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all ${alreadyPicked
+                          className={`px-3.5 py-1.5 rounded-lg text-xs font-extrabold transition-all cursor-pointer ${
+                            alreadyPicked
                               ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
                               : teamCapReached
-                                ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
-                                : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
-                            }`}
+                              ? 'bg-rose-500/10 text-rose-400 cursor-not-allowed'
+                              : 'bg-orange-500 hover:bg-orange-400 text-zinc-950'
+                          }`}
                         >
                           {alreadyPicked
                             ? 'Selected'
                             : teamCapReached
-                              ? 'Team Max'
-                              : 'Select'}
+                            ? 'Team Max'
+                            : 'Select'}
                         </button>
                       </div>
                     </div>

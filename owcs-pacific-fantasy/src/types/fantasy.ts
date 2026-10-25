@@ -28,7 +28,15 @@ export interface Player {
   is_active: boolean;
   image_url: string | null;
   created_at: string;
-  teams?: Team; // Joined team relation
+  teams?: Team;
+  selected_by_pct?: number;
+}
+
+export interface PlayerOwnershipRow {
+  player_id: string;
+  selection_count: number;
+  active_rosters_count: number;
+  selected_by_pct: number;
 }
 
 export interface Gameweek {
@@ -101,6 +109,7 @@ export interface PlayerSeasonStat {
   maps_won: number;
   total_fantasy_points: number;
   avg_points_per_map: number;
+  selected_by_pct?: number;
 }
 
 export interface ExtractedScoreboardRow {

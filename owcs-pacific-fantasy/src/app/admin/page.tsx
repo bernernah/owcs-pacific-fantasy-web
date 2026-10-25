@@ -16,6 +16,7 @@ import {
   ChevronDown,
   ChevronUp,
   TrendingUp,
+  DollarSign, 
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import RoleBadge from '@/components/RoleBadge';
@@ -842,6 +843,12 @@ export default function AdminDashboardPage() {
             onBanner={setBanner}
           />
 
+          <ManualPriceOverrideCard
+            players={players}
+            onPriceUpdated={loadAdminData}
+            onBanner={setBanner}
+          />
+
           <form
             onSubmit={handleQuickAddPlayer}
             className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-4"
@@ -1640,5 +1647,208 @@ function FixturesManagerCard({
         </div>
       </div>
     </div>
+  );
+}
+
+function ManualPriceOverrideCard({
+  players,
+  onPriceUpdated,
+  onBanner,
+}: {
+  players: Player[];
+  onPriceUpdated: () => void;
+  onBanner: (msg: { type: 'success' | 'error'; text: string } | null) => void;
+}) {
+  const supabase = getSupabaseBrowserClient();
+
+  const activePlayers = useMemo(
+    () => players.filter((p) => p.is_active),
+    [players]
+  );
+
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string>('');
+  const [newPriceInput, setNewPriceInput] = useState<string>('');
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [lastResultMessage, setLastResultMessage] = useState<string | null>(
+    null
+  );
+
+  useEffect(() => {
+    if (!selectedPlayerId && activePlayers.length > 0) {
+      const first = activePlayers[0];
+      setSelectedPlayerId(first.id);
+      setNewPriceInput(String(Number(first.price).toFixed(1)));
+    }
+  }, [activePlayers, selectedPlayerId]);
+
+  const selectedPlayer = useMemo(
+    () => activePlayers.find((p) => p.id === selectedPlayerId) ?? null,
+    [activePlayers, selectedPlayerId]
+  );
+
+  const handlePlayerChange = (playerId: string) => {
+    setSelectedPlayerId(playerId);
+    setLastResultMessage(null);
+    const found = activePlayers.find((p) => p.id === playerId);
+    if (found) {
+      setNewPriceInput(String(Number(found.price).toFixed(1)));
+    }
+  };
+
+  const previewDelta = useMemo(() => {
+    if (!selectedPlayer) return 0;
+    const parsed = parseFloat(newPriceInput);
+    if (Number.isNaN(parsed)) return 0;
+    return Number((parsed - Number(selectedPlayer.price)).toFixed(1));
+  }, [selectedPlayer, newPriceInput]);
+
+  const handleOverrideSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    onBanner(null);
+    setLastResultMessage(null);
+
+    if (!selectedPlayer) return;
+    const parsedPrice = parseFloat(newPriceInput);
+    if (Number.isNaN(parsedPrice) || parsedPrice <= 0) {
+      onBanner({
+        type: 'error',
+        text: 'Please enter a valid positive price (e.g., 19.5).',
+      });
+      return;
+    }
+
+    setSubmitting(true);
+    const { data, error } = await supabase.rpc('manual_price_override', {
+      p_player_id: selectedPlayer.id,
+      p_new_price: parsedPrice,
+    });
+    setSubmitting(false);
+
+    if (error) {
+      onBanner({ type: 'error', text: error.message });
+    } else {
+      const res = data as {
+        player_name: string;
+        old_price: number;
+        new_price: number;
+        delta: number;
+        affected_managers_count: number;
+      };
+
+      const sign = Number(res.delta) >= 0 ? '+' : '';
+      const msg = `Updated ${res.player_name} from $${Number(
+        res.old_price
+      ).toFixed(1)}M to $${Number(res.new_price).toFixed(
+        1
+      )}M (${sign}$${Number(res.delta).toFixed(1)}M). Adjusted ${
+        res.affected_managers_count
+      } manager budget(s)!`;
+
+      setLastResultMessage(msg);
+      onBanner({ type: 'success', text: msg });
+      onPriceUpdated();
+    }
+  };
+
+  return (
+    <form
+      onSubmit={handleOverrideSubmit}
+      className="rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-4"
+    >
+      <div className="flex items-center gap-2.5 border-b border-zinc-800 pb-3">
+        <DollarSign className="w-5 h-5 text-emerald-400" />
+        <div>
+          <h2 className="text-base font-black text-white">
+            Manual Player Price Override
+          </h2>
+          <p className="text-[11px] text-zinc-400">
+            Adjust a player&apos;s contract price and automatically apply the
+            delta to all managers who currently own them.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+        <div className="sm:col-span-2">
+          <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5">
+            Select Active Player
+          </label>
+          <select
+            value={selectedPlayerId}
+            onChange={(e) => handlePlayerChange(e.target.value)}
+            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs font-bold text-white"
+          >
+            {activePlayers.map((p) => (
+              <option key={p.id} value={p.id}>
+                [{p.teams?.code ?? 'OWCS'}] {p.name} ({p.role}) — Current: $
+                {Number(p.price).toFixed(1)}M
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="block text-[11px] font-bold uppercase tracking-wider text-zinc-400 mb-1.5">
+            New Price ($M)
+          </label>
+          <input
+            type="number"
+            step="0.5"
+            min="1"
+            max="50"
+            value={newPriceInput}
+            onChange={(e) => setNewPriceInput(e.target.value)}
+            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-white focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+      </div>
+
+      {/* Live Delta Preview Bar */}
+      {selectedPlayer && (
+        <div className="rounded-xl border border-zinc-800/90 bg-zinc-950/70 px-3.5 py-2.5 flex items-center justify-between text-xs">
+          <span className="text-zinc-400">
+            Current:{' '}
+            <strong className="text-white font-mono">
+              ${Number(selectedPlayer.price).toFixed(1)}M
+            </strong>
+          </span>
+          <span className="text-zinc-400">
+            Budget Impact per Owner:{' '}
+            <strong
+              className={`font-mono ${
+                previewDelta > 0
+                  ? 'text-emerald-400'
+                  : previewDelta < 0
+                  ? 'text-rose-400'
+                  : 'text-zinc-300'
+              }`}
+            >
+              {previewDelta > 0
+                ? `+$${previewDelta.toFixed(1)}M`
+                : previewDelta < 0
+                ? `-$${Math.abs(previewDelta).toFixed(1)}M`
+                : '$0.0M (No Change)'}
+            </strong>
+          </span>
+        </div>
+      )}
+
+      {lastResultMessage && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 flex items-center gap-2 text-xs font-bold text-emerald-300">
+          <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+          <span>{lastResultMessage}</span>
+        </div>
+      )}
+
+      <button
+        type="submit"
+        disabled={submitting || !selectedPlayer || previewDelta === 0}
+        className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-wider py-2.5 rounded-xl shadow-lg shadow-emerald-500/20 transition-all cursor-pointer"
+      >
+        {submitting
+          ? 'Applying Price & Updating Owner Budgets...'
+          : 'Apply Price Override & Sync Owner Budgets'}
+      </button>
+    </form>
   );
 }

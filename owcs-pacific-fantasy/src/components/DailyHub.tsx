@@ -81,7 +81,7 @@ export default function DailyHub({ profile, onBonusClaimed }: DailyHubProps) {
             <span className="text-emerald-400 underline">
               1 Free Daily Transfer
             </span>
-            .
+            . Save up to 2 free transfers by rolling them over to the next day.
           </p>
         </div>
 

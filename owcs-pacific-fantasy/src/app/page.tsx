@@ -425,8 +425,8 @@ function LeaderboardContent() {
     {
       title: `Use your ${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free Daily Transfer`,
       icon: ArrowLeftRight,
-      description: `Every Matchday grants ${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free Daily Transfer (${FANTASY_CONFIG.PLAYOFF_WILDCARD_FREE_TRANSFERS} in Playoffs) to swap out underperforming players without taking a ${formattedTransferPenalty} hit.`,
-      badge: `${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free / Day`,
+      description: `Every Matchday grants ${FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS} Free Daily Transfer (${FANTASY_CONFIG.PLAYOFF_WILDCARD_FREE_TRANSFERS} in Playoffs). Save up to 2 free transfers by rolling them over to the next day! Extra transfers cost ${formattedTransferPenalty}.`,
+      badge: 'Roll Over up to 2',
     },
   ];
 

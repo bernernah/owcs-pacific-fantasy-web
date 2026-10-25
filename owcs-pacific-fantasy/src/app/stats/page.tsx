@@ -1,34 +1,50 @@
 'use client';
 
 import React, { useEffect, useState, useMemo } from 'react';
-import {
-  BarChart3,
-  Search,
-  ArrowUpDown,
-  Filter,
-} from 'lucide-react';
+import { BarChart3, Search, ArrowUpDown, Filter } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import RoleBadge from '@/components/RoleBadge';
 import type {
   PlayerSeasonStat,
-  MatchStat,
   Gameweek,
   PlayerRole,
+  Player,
+  PlayerOwnershipRow,
 } from '@/types/fantasy';
 
 type SortField =
   | 'total_fantasy_points'
   | 'price'
+  | 'selected_by_pct'
   | 'total_elims'
   | 'total_deaths'
   | 'total_damage'
   | 'total_healing';
 
+interface MatchLogWithRelations {
+  id: string;
+  gameweek_id: string;
+  player_id: string;
+  match_name: string;
+  map_number: number;
+  kills: number;
+  deaths: number;
+  damage: number;
+  healing: number;
+  map_won: boolean;
+  calculated_points: number;
+  players?: Player;
+  gameweeks?: Gameweek;
+}
+
 export default function StatsDatabasePage() {
   const supabase = getSupabaseBrowserClient();
 
   const [seasonStats, setSeasonStats] = useState<PlayerSeasonStat[]>([]);
-  const [matchStats, setMatchStats] = useState<MatchStat[]>([]);
+  const [matchLogs, setMatchLogs] = useState<MatchLogWithRelations[]>([]);
+  const [ownershipById, setOwnershipById] = useState<Record<string, number>>(
+    {}
+  );
   const [gameweeks, setGameweeks] = useState<Gameweek[]>([]);
 
   const [selectedGwId, setSelectedGwId] = useState<string>('ALL');
@@ -42,21 +58,41 @@ export default function StatsDatabasePage() {
   useEffect(() => {
     async function loadStatsHub() {
       setLoading(true);
-      const [{ data: seasonData }, { data: matchData }, { data: gwData }] =
-        await Promise.all([
-          supabase.from('player_season_stats_view').select('*'),
-          supabase
-            .from('match_logs')
-            .select('*, players(*, teams(*)), gameweeks(*)')
-            .order('created_at', { ascending: false }),
-          supabase
-            .from('gameweeks')
-            .select('*')
-            .order('number', { ascending: true }),
-        ]);
+      const [
+        { data: seasonData },
+        { data: logsData },
+        { data: ownershipData },
+        { data: gwData },
+      ] = await Promise.all([
+        supabase.from('player_season_stats_view').select('*'),
+        supabase
+          .from('match_logs')
+          .select('*, players(*, teams(*)), gameweeks(*)')
+          .order('created_at', { ascending: false }),
+        supabase.from('player_ownership_view').select('*'),
+        supabase
+          .from('gameweeks')
+          .select('*')
+          .order('number', { ascending: true }),
+      ]);
 
-      setSeasonStats((seasonData as PlayerSeasonStat[]) ?? []);
-      setMatchStats((matchData as MatchStat[]) ?? []);
+      const ownMap: Record<string, number> = {};
+      if (ownershipData) {
+        for (const row of ownershipData as PlayerOwnershipRow[]) {
+          ownMap[row.player_id] = Number(row.selected_by_pct ?? 0);
+        }
+      }
+      setOwnershipById(ownMap);
+
+      const enrichedSeason = ((seasonData as PlayerSeasonStat[]) ?? []).map(
+        (row) => ({
+          ...row,
+          selected_by_pct: ownMap[row.player_id] ?? 0.0,
+        })
+      );
+
+      setSeasonStats(enrichedSeason);
+      setMatchLogs((logsData as MatchLogWithRelations[]) ?? []);
       setGameweeks((gwData as Gameweek[]) ?? []);
       setLoading(false);
     }
@@ -68,12 +104,12 @@ export default function StatsDatabasePage() {
   const availableMatchNames = useMemo(() => {
     const filteredByGw =
       selectedGwId === 'ALL'
-        ? matchStats
-        : matchStats.filter((m) => m.gameweek_id === selectedGwId);
+        ? matchLogs
+        : matchLogs.filter((m) => m.gameweek_id === selectedGwId);
     return Array.from(new Set(filteredByGw.map((m) => m.match_name)));
-  }, [matchStats, selectedGwId]);
+  }, [matchLogs, selectedGwId]);
 
-  // Unified rows: either Season Aggregate or Filtered by Gameweek/Match
+  // Unified rows: either Season Aggregate or Filtered by Matchday/Match
   const displayedRows = useMemo(() => {
     if (selectedGwId === 'ALL' && selectedMatchName === 'ALL') {
       return seasonStats
@@ -91,24 +127,21 @@ export default function StatsDatabasePage() {
           return true;
         })
         .sort((a, b) => {
-          const valA = Number(a[sortField]);
-          const valB = Number(b[sortField]);
+          const valA = Number(a[sortField] ?? 0);
+          const valB = Number(b[sortField] ?? 0);
           return sortAsc ? valA - valB : valB - valA;
         });
     }
 
-    // Aggregate from granular match_logs for the selected Gameweek and/or Match
+    // Aggregate from granular match_logs for the selected Matchday and/or Match
     const grouped: Record<string, PlayerSeasonStat> = {};
 
-    for (const ms of matchStats) {
-      if (selectedGwId !== 'ALL' && ms.gameweek_id !== selectedGwId) continue;
-      if (
-        selectedMatchName !== 'ALL' &&
-        ms.match_name !== selectedMatchName
-      )
+    for (const ml of matchLogs) {
+      if (selectedGwId !== 'ALL' && ml.gameweek_id !== selectedGwId) continue;
+      if (selectedMatchName !== 'ALL' && ml.match_name !== selectedMatchName)
         continue;
 
-      const p = ms.players;
+      const p = ml.players;
       if (!p) continue;
 
       if (!grouped[p.id]) {
@@ -130,17 +163,18 @@ export default function StatsDatabasePage() {
           maps_won: 0,
           total_fantasy_points: 0,
           avg_points_per_map: 0,
+          selected_by_pct: ownershipById[p.id] ?? 0.0,
         };
       }
 
       const entry = grouped[p.id];
       entry.maps_played += 1;
-      entry.total_elims += Number(ms.kills);
-      entry.total_deaths += Number(ms.deaths);
-      entry.total_damage += Number(ms.damage);
-      entry.total_healing += Number(ms.healing);
-      entry.maps_won += ms.map_won ? 1 : 0;
-      entry.total_fantasy_points += Number(ms.calculated_points);
+      entry.total_elims += Number(ml.kills);
+      entry.total_deaths += Number(ml.deaths);
+      entry.total_damage += Number(ml.damage);
+      entry.total_healing += Number(ml.healing);
+      entry.maps_won += ml.map_won ? 1 : 0;
+      entry.total_fantasy_points += Number(ml.calculated_points);
       entry.avg_points_per_map = Number(
         (entry.total_fantasy_points / entry.maps_played).toFixed(2)
       );
@@ -159,13 +193,14 @@ export default function StatsDatabasePage() {
         return true;
       })
       .sort((a, b) => {
-        const valA = Number(a[sortField]);
-        const valB = Number(b[sortField]);
+        const valA = Number(a[sortField] ?? 0);
+        const valB = Number(b[sortField] ?? 0);
         return sortAsc ? valA - valB : valB - valA;
       });
   }, [
     seasonStats,
-    matchStats,
+    matchLogs,
+    ownershipById,
     selectedGwId,
     selectedMatchName,
     roleFilter,
@@ -197,8 +232,8 @@ export default function StatsDatabasePage() {
                 OWCS PACIFIC STATS DATABASE
               </h1>
               <p className="text-xs text-zinc-400">
-                Inspect cumulative season totals or drill down into specific
-                Gameweeks and individual map scoreboards.
+                Compare live manager ownership (Selected %) against cumulative
+                season totals or individual Matchdays.
               </p>
             </div>
           </div>
@@ -219,8 +254,9 @@ export default function StatsDatabasePage() {
             {(['ALL', 'TANK', 'DPS', 'SUPPORT'] as const).map((r) => (
               <button
                 key={r}
+                type="button"
                 onClick={() => setRoleFilter(r)}
-                className={`px-3 py-2 rounded-xl text-xs font-bold ${
+                className={`px-3 py-2 rounded-xl text-xs font-bold cursor-pointer ${
                   roleFilter === r
                     ? 'bg-orange-500 text-zinc-950'
                     : 'bg-zinc-900 text-zinc-400 hover:text-white border border-zinc-800'
@@ -232,7 +268,7 @@ export default function StatsDatabasePage() {
           </div>
         </div>
 
-        {/* Granular Scope Dropdowns (Gameweek & Match) */}
+        {/* Granular Scope Dropdowns (Matchday & Match) */}
         <div className="pt-4 border-t border-zinc-800/80 flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2 text-xs font-bold text-zinc-400">
             <Filter className="w-4 h-4 text-orange-400" />
@@ -247,7 +283,7 @@ export default function StatsDatabasePage() {
             }}
             className="bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2 text-xs font-bold text-white"
           >
-            <option value="ALL">All Season (Cumulative Totals)</option>
+            <option value="ALL">All Stage (Cumulative Totals)</option>
             {gameweeks.map((gw) => (
               <option key={gw.id} value={gw.id}>
                 Day {gw.number}: {gw.name}
@@ -260,7 +296,7 @@ export default function StatsDatabasePage() {
             onChange={(e) => setSelectedMatchName(e.target.value)}
             className="bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2 text-xs font-bold text-white"
           >
-            <option value="ALL">All Matches / Maps</option>
+            <option value="ALL">All Series / Matches</option>
             {availableMatchNames.map((mName) => (
               <option key={mName} value={mName}>
                 {mName}
@@ -285,16 +321,24 @@ export default function StatsDatabasePage() {
                   <th className="py-3.5 px-4">Role</th>
                   <th
                     onClick={() => toggleSort('price')}
-                    className="py-3.5 px-4 cursor-pointer hover:text-white"
+                    className="py-3.5 px-4 cursor-pointer hover:text-white select-none"
                   >
                     <span className="inline-flex items-center gap-1">
                       Price <ArrowUpDown className="w-3 h-3" />
                     </span>
                   </th>
+                  <th
+                    onClick={() => toggleSort('selected_by_pct')}
+                    className="py-3.5 px-4 text-right cursor-pointer hover:text-emerald-400 select-none"
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">
+                      Selected % <ArrowUpDown className="w-3 h-3" />
+                    </span>
+                  </th>
                   <th className="py-3.5 px-4 text-right">Maps</th>
                   <th
                     onClick={() => toggleSort('total_elims')}
-                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white"
+                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white select-none"
                   >
                     <span className="inline-flex items-center gap-1 justify-end">
                       Elims <ArrowUpDown className="w-3 h-3" />
@@ -302,7 +346,7 @@ export default function StatsDatabasePage() {
                   </th>
                   <th
                     onClick={() => toggleSort('total_deaths')}
-                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white"
+                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white select-none"
                   >
                     <span className="inline-flex items-center gap-1 justify-end">
                       Deaths <ArrowUpDown className="w-3 h-3" />
@@ -310,7 +354,7 @@ export default function StatsDatabasePage() {
                   </th>
                   <th
                     onClick={() => toggleSort('total_damage')}
-                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white"
+                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white select-none"
                   >
                     <span className="inline-flex items-center gap-1 justify-end">
                       Damage <ArrowUpDown className="w-3 h-3" />
@@ -318,7 +362,7 @@ export default function StatsDatabasePage() {
                   </th>
                   <th
                     onClick={() => toggleSort('total_healing')}
-                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white"
+                    className="py-3.5 px-4 text-right cursor-pointer hover:text-white select-none"
                   >
                     <span className="inline-flex items-center gap-1 justify-end">
                       Healing <ArrowUpDown className="w-3 h-3" />
@@ -326,7 +370,7 @@ export default function StatsDatabasePage() {
                   </th>
                   <th
                     onClick={() => toggleSort('total_fantasy_points')}
-                    className="py-3.5 px-5 text-right cursor-pointer text-orange-400"
+                    className="py-3.5 px-5 text-right cursor-pointer text-orange-400 select-none"
                   >
                     <span className="inline-flex items-center gap-1 justify-end">
                       Fantasy Pts <ArrowUpDown className="w-3 h-3" />
@@ -353,8 +397,13 @@ export default function StatsDatabasePage() {
                     <td className="py-3.5 px-4">
                       <RoleBadge role={row.role} size="sm" />
                     </td>
-                    <td className="py-3.5 px-4 font-semibold text-emerald-400">
+                    <td className="py-3.5 px-4 font-semibold text-emerald-400 font-mono">
                       ${Number(row.price).toFixed(1)}M
+                    </td>
+                    <td className="py-3.5 px-4 text-right">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 font-mono text-xs font-bold text-emerald-400">
+                        {Number(row.selected_by_pct ?? 0).toFixed(1)}%
+                      </span>
                     </td>
                     <td className="py-3.5 px-4 text-right text-zinc-300">
                       {row.maps_played}
@@ -372,7 +421,7 @@ export default function StatsDatabasePage() {
                       {Number(row.total_healing).toLocaleString()}
                     </td>
                     <td className="py-3.5 px-5 text-right">
-                      <span className="font-black text-base text-orange-400">
+                      <span className="font-black text-base text-orange-400 font-mono">
                         {Number(row.total_fantasy_points).toFixed(1)}
                       </span>
                     </td>

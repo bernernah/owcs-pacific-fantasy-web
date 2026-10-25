@@ -8,6 +8,7 @@ import {
   RefreshCw,
   Sparkles,
   Calendar,
+  ArrowUpDown,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import { FANTASY_CONFIG, isPreSeasonNow } from '@/lib/config';
@@ -15,9 +16,20 @@ import RoleBadge from '@/components/RoleBadge';
 import CountdownTimer from '@/components/CountdownTimer';
 import TeamFixturesTooltip from '@/components/TeamFixturesTooltip';
 import StageFixturesSchedule from '@/components/StageFixturesSchedule';
-import type { Player, Gameweek, UserRoster, Fixture } from '@/types/fantasy';
+import type {
+  Player,
+  Gameweek,
+  UserRoster,
+  Fixture,
+  PlayerOwnershipRow,
+} from '@/types/fantasy';
 
 type SlotKey = 'tank' | 'dps1' | 'dps2' | 'sup1' | 'sup2';
+type ReplacementSortOption =
+  | 'PRICE_DESC'
+  | 'PRICE_ASC'
+  | 'OWNERSHIP_DESC'
+  | 'OWNERSHIP_ASC';
 
 export default function TransfersPage() {
   const supabase = getSupabaseBrowserClient();
@@ -51,10 +63,16 @@ export default function TransfersPage() {
     sup2: null,
   });
 
+  // Server-computed rolling free transfer allowance (1 or 2 in Reg Season, 3 in Playoffs)
+  const [rolledFreeAllowance, setRolledFreeAllowance] = useState<number>(1);
   const [alreadyUsedTransfers, setAlreadyUsedTransfers] = useState<number>(0);
+
   const [activeSlotToSwap, setActiveSlotToSwap] = useState<SlotKey | null>(
     null
   );
+  const [sortOption, setSortOption] =
+    useState<ReplacementSortOption>('PRICE_DESC');
+
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [isPreSeason, setIsPreSeason] = useState<boolean>(true);
 
@@ -65,7 +83,6 @@ export default function TransfersPage() {
     text: string;
   } | null>(null);
 
-  // Client-only evaluation of Pre-Season & Lock state
   useEffect(() => {
     const checkTimeState = () => {
       setIsPreSeason(isPreSeasonNow());
@@ -89,24 +106,29 @@ export default function TransfersPage() {
       } = await supabase.auth.getUser();
       setUserId(user?.id ?? null);
 
-      const [{ data: gwData }, { data: playerData }, { data: fixtureData }] =
-        await Promise.all([
-          supabase
-            .from('gameweeks')
-            .select('*')
-            .order('number', { ascending: true }),
-          supabase
-            .from('players')
-            .select('*, teams(*)')
-            .eq('is_active', true)
-            .order('price', { ascending: false }),
-          supabase
-            .from('fixtures')
-            .select(
-              '*, team_a_team:teams!fixtures_team_a_fkey(*), team_b_team:teams!fixtures_team_b_fkey(*), gameweeks(*)'
-            )
-            .order('match_time', { ascending: true }),
-        ]);
+      const [
+        { data: gwData },
+        { data: playerData },
+        { data: ownershipData },
+        { data: fixtureData },
+      ] = await Promise.all([
+        supabase
+          .from('gameweeks')
+          .select('*')
+          .order('number', { ascending: true }),
+        supabase
+          .from('players')
+          .select('*, teams(*)')
+          .eq('is_active', true)
+          .order('price', { ascending: false }),
+        supabase.from('player_ownership_view').select('*'),
+        supabase
+          .from('fixtures')
+          .select(
+            '*, team_a_team:teams!fixtures_team_a_fkey(*), team_b_team:teams!fixtures_team_b_fkey(*), gameweeks(*)'
+          )
+          .order('match_time', { ascending: true }),
+      ]);
 
       let gws = (gwData as Gameweek[]) ?? [];
       if (gws.length === 0) {
@@ -134,7 +156,18 @@ export default function TransfersPage() {
         null;
 
       setActiveGw(currentGw);
-      const allPlayers = (playerData as Player[]) ?? [];
+
+      const ownershipMap: Record<string, number> = {};
+      if (ownershipData) {
+        for (const row of ownershipData as PlayerOwnershipRow[]) {
+          ownershipMap[row.player_id] = Number(row.selected_by_pct ?? 0);
+        }
+      }
+
+      const allPlayers = ((playerData as Player[]) ?? []).map((p) => ({
+        ...p,
+        selected_by_pct: ownershipMap[p.id] ?? 0.0,
+      }));
       setPlayers(allPlayers);
 
       if (user) {
@@ -153,11 +186,22 @@ export default function TransfersPage() {
       }
 
       if (user && currentGw) {
-        const { data: rosters } = await supabase
-          .from('user_rosters')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false });
+        const [{ data: rosters }, { data: freeAllowanceData }] =
+          await Promise.all([
+            supabase
+              .from('user_rosters')
+              .select('*')
+              .eq('user_id', user.id)
+              .order('created_at', { ascending: false }),
+            supabase.rpc('get_user_free_transfers', {
+              p_user_id: user.id,
+              p_gameweek_id: currentGw.id,
+            }),
+          ]);
+
+        if (typeof freeAllowanceData === 'number') {
+          setRolledFreeAllowance(freeAllowanceData);
+        }
 
         if (rosters && rosters.length > 0) {
           const currentGwRoster = rosters.find(
@@ -186,16 +230,19 @@ export default function TransfersPage() {
   }, [supabase]);
 
   const isUnlimitedFreeWindow = useMemo(() => {
-    return isPreSeason || activeGw?.number === 1;
-  }, [isPreSeason, activeGw]);
+    return isPreSeason || activeGw?.number === 1 || rolledFreeAllowance > 50;
+  }, [isPreSeason, activeGw, rolledFreeAllowance]);
 
   const freeTransferAllowance = useMemo(() => {
     if (isUnlimitedFreeWindow) return 999;
     if (activeGw?.is_playoffs) {
       return FANTASY_CONFIG.PLAYOFF_WILDCARD_FREE_TRANSFERS;
     }
-    return FANTASY_CONFIG.REGULAR_SEASON_FREE_TRANSFERS;
-  }, [isUnlimitedFreeWindow, activeGw]);
+    return Math.min(
+      FANTASY_CONFIG.MAX_ROLLED_FREE_TRANSFERS,
+      Math.max(1, rolledFreeAllowance)
+    );
+  }, [isUnlimitedFreeWindow, activeGw, rolledFreeAllowance]);
 
   const pendingChangesCount = useMemo(() => {
     const origIds = new Set(
@@ -233,7 +280,6 @@ export default function TransfersPage() {
   );
   const totalPointHit = extraPaidTransfers * penaltyPerTransfer;
 
-  // Dynamic Personal Budget + Relative Playoff Bonus (+$5.0M)
   const maxBudget = useMemo(() => {
     const relativePlayoffBonus =
       activeGw?.is_playoffs && !playoffBonusApplied
@@ -333,13 +379,32 @@ export default function TransfersPage() {
         .filter((p): p is Player => p !== null)
         .map((p) => p.id)
     );
-    return players.filter(
+    const eligible = players.filter(
       (p) =>
         p.role === expectedRoleForActiveSlot &&
         !p.teams?.is_eliminated &&
         !draftedIds.has(p.id)
     );
-  }, [players, expectedRoleForActiveSlot, draftSlots]);
+
+    return [...eligible].sort((a, b) => {
+      if (sortOption === 'OWNERSHIP_DESC') {
+        const diff =
+          Number(b.selected_by_pct ?? 0) - Number(a.selected_by_pct ?? 0);
+        if (diff !== 0) return diff;
+        return Number(b.price) - Number(a.price);
+      }
+      if (sortOption === 'OWNERSHIP_ASC') {
+        const diff =
+          Number(a.selected_by_pct ?? 0) - Number(b.selected_by_pct ?? 0);
+        if (diff !== 0) return diff;
+        return Number(b.price) - Number(a.price);
+      }
+      if (sortOption === 'PRICE_ASC') {
+        return Number(a.price) - Number(b.price);
+      }
+      return Number(b.price) - Number(a.price);
+    });
+  }, [players, expectedRoleForActiveSlot, draftSlots, sortOption]);
 
   return (
     <div className="space-y-8">
@@ -352,8 +417,9 @@ export default function TransfersPage() {
             <span className="text-white underline">
               100% Free and Unlimited
             </span>{' '}
-            until the Day 1 Lock! Experiment with your roster with zero point
-            penalties.
+            until the Day 1 Lock! Once matches begin, you earn 1 Free Daily
+            Transfer and can save up to 2 free transfers by rolling them over to
+            the next day.
           </p>
         </div>
       )}
@@ -369,13 +435,13 @@ export default function TransfersPage() {
               DAILY TRANSFERS &amp; LOCK HUB
             </h1>
             <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-              Click any starter below to test swaps in your local draft, or
-              check the Stage 3 Fixtures Schedule below before locking in.
+              Save up to 2 free transfers by rolling them over to the next day.
+              Extra transfers beyond your saved allowance cost -
+              {penaltyPerTransfer} pts.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {/* Live Dynamic Countdown Component */}
             <CountdownTimer
               lockTime={activeGw?.lock_time ?? null}
               dayName={activeGw ? `Day ${activeGw.number}` : 'Day 1'}
@@ -384,12 +450,13 @@ export default function TransfersPage() {
             {/* Free Transfers Counter */}
             <div className="bg-zinc-950/90 border border-zinc-800 px-4 py-2.5 rounded-xl">
               <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-                Free Transfers Remaining
+                Free Transfers (Max {FANTASY_CONFIG.MAX_ROLLED_FREE_TRANSFERS}{' '}
+                Saved)
               </p>
               <p className="text-xs sm:text-sm font-black text-emerald-400">
                 {isUnlimitedFreeWindow
                   ? 'UNLIMITED (Pre-Season)'
-                  : `${freeTransfersRemaining} Free`}
+                  : `${freeTransfersRemaining} / ${freeTransferAllowance} Free`}
                 {totalPointHit > 0 && (
                   <span className="ml-2 text-rose-400">
                     (-{totalPointHit} pts hit)
@@ -483,6 +550,12 @@ export default function TransfersPage() {
                         <p className="font-extrabold text-white text-sm">
                           {current?.name ?? `Empty ${slot.label}`}
                         </p>
+                        {current && (
+                          <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                            Sel:{' '}
+                            {Number(current.selected_by_pct ?? 0).toFixed(1)}%
+                          </span>
+                        )}
                         {isModified && (
                           <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
                             {orig ? `Swapped (was ${orig.name})` : 'Added'}
@@ -540,12 +613,36 @@ export default function TransfersPage() {
           </div>
         </div>
 
-        {/* Right 5 Cols: Replacement Market */}
+        {/* Right 5 Cols: Replacement Market with Ownership Sort */}
         <div className="lg:col-span-5 rounded-2xl border border-zinc-800 bg-[#0b0e16] p-6 space-y-4">
-          <h2 className="text-base font-black text-white">
-            2. Choose Replacement{' '}
-            {expectedRoleForActiveSlot ? `(${expectedRoleForActiveSlot})` : ''}
-          </h2>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <h2 className="text-base font-black text-white">
+              2. Choose Replacement{' '}
+              {expectedRoleForActiveSlot
+                ? `(${expectedRoleForActiveSlot})`
+                : ''}
+            </h2>
+
+            <div className="relative inline-flex items-center">
+              <ArrowUpDown className="w-3.5 h-3.5 text-orange-400 absolute left-2.5 pointer-events-none" />
+              <select
+                value={sortOption}
+                onChange={(e) =>
+                  setSortOption(e.target.value as ReplacementSortOption)
+                }
+                className="bg-zinc-900 border border-zinc-800 rounded-xl pl-7 pr-2.5 py-1.5 text-[11px] font-bold text-white focus:outline-none focus:border-orange-500"
+              >
+                <option value="PRICE_DESC">Sort by: Price (High-Low)</option>
+                <option value="PRICE_ASC">Sort by: Price (Low-High)</option>
+                <option value="OWNERSHIP_DESC">
+                  Sort by: Selected % (High-Low)
+                </option>
+                <option value="OWNERSHIP_ASC">
+                  Sort by: Selected % (Low-High)
+                </option>
+              </select>
+            </div>
+          </div>
 
           {!activeSlotToSwap ? (
             <div className="py-16 text-center text-xs text-zinc-500">
@@ -567,6 +664,10 @@ export default function TransfersPage() {
                       <p className="font-bold text-white text-sm">
                         {candidate.name}
                       </p>
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        Sel:{' '}
+                        {Number(candidate.selected_by_pct ?? 0).toFixed(1)}%
+                      </span>
                     </div>
                     <div className="flex items-center gap-1.5 text-[11px] text-zinc-400 mt-0.5">
                       <span>
@@ -627,8 +728,8 @@ export default function TransfersPage() {
             <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed">
               You are making{' '}
               <strong className="text-white">{pendingChangesCount}</strong>{' '}
-              transfer(s), which exceeds your remaining free transfer allowance
-              by <strong className="text-rose-400">{extraPaidTransfers}</strong>.
+              transfer(s), which exceeds your saved free transfer allowance by{' '}
+              <strong className="text-rose-400">{extraPaidTransfers}</strong>.
               Confirming this change will deduct{' '}
               <strong className="text-rose-400">
                 -{totalPointHit} fantasy points
