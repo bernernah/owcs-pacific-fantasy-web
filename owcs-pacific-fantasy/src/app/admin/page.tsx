@@ -1,5 +1,6 @@
 'use client';
 
+import { runLocalTesseractScoreboardOcr } from '@/lib/localScoreboardOcr';
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   ShieldAlert,
@@ -16,7 +17,7 @@ import {
   ChevronDown,
   ChevronUp,
   TrendingUp,
-  DollarSign, 
+  DollarSign,
 } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import RoleBadge from '@/components/RoleBadge';
@@ -81,6 +82,7 @@ export default function AdminDashboardPage() {
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [parsingImage, setParsingImage] = useState<boolean>(false);
+  const [ocrStatusText, setOcrStatusText] = useState<string>('');
   const [externalPrefill, setExternalPrefill] = useState<Record<
     string,
     Partial<PlayerGridStat>
@@ -187,6 +189,65 @@ export default function AdminDashboardPage() {
     setBanner(null);
   };
 
+  const applyExtractedRowsToGrid = (
+    rawList: ExtractedScoreboardRow[],
+    sourceLabel: 'Gemini AI' | 'Local Tesseract OCR Fallback'
+  ) => {
+    const nextPrefill: Record<string, Partial<PlayerGridStat>> = {};
+    const unmapped: ExtractedScoreboardRow[] = [];
+    const detectedTeamCodes = new Set<string>();
+
+    for (const row of rawList) {
+      const matchedPlayer = findBestPlayerMatch(row.player_name);
+      if (matchedPlayer) {
+        nextPrefill[matchedPlayer.id] = {
+          player_id: matchedPlayer.id,
+          included: true,
+          kills: Number(row.elims) || 0,
+          deaths: Number(row.deaths) || 0,
+          damage: Number(row.damage) || 0,
+          healing: Number(row.healing) || 0,
+          map_won: Boolean(row.map_won),
+        };
+        if (matchedPlayer.teams?.code) {
+          detectedTeamCodes.add(matchedPlayer.teams.code);
+        }
+      } else {
+        unmapped.push(row);
+      }
+    }
+
+    const codes = Array.from(detectedTeamCodes);
+    if (!matchName.trim() && codes.length >= 2) {
+      setMatchName(`${codes[0]} vs ${codes[1]}`);
+    }
+
+    setExternalPrefill(nextPrefill);
+    setUnmappedOcrRows(unmapped);
+
+    const matchedCount = Object.keys(nextPrefill).length;
+    if (matchedCount === 0 && unmapped.length === 0) {
+      setBanner({
+        type: 'error',
+        text: `${sourceLabel} completed, but no scoreboard rows could be detected. Try a clearer crop or enter stats manually below.`,
+      });
+      return;
+    }
+
+    setBanner({
+      type: 'success',
+      text: `${sourceLabel} pre-filled ${matchedCount} players into Map ${mapNumber} below! ${unmapped.length > 0
+          ? `(${unmapped.length} unrecognized name(s) can be mapped right below.)`
+          : `Verify the numbers and click Commit Map ${mapNumber} Stats.`
+        }`,
+    });
+  };
+
+  // ==========================================================================
+  // HYBRID EXTRACTION WORKFLOW:
+  // 1. Attempt Gemini API first for high accuracy.
+  // 2. If Gemini fails/throws, immediately fall back to local Tesseract.js OCR.
+  // ==========================================================================
   const handleExtractScoreboardToGrid = async () => {
     if (!imageFile) {
       setBanner({
@@ -197,88 +258,56 @@ export default function AdminDashboardPage() {
     }
 
     setParsingImage(true);
+    setOcrStatusText('Contacting Gemini AI...');
     setBanner(null);
 
     try {
-      const maxAttempts = 3;
-      let res: Response | null = null;
-      let data: { players?: ExtractedScoreboardRow[]; error?: string } = {};
+      const formData = new FormData();
+      formData.append('image', imageFile);
 
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const formData = new FormData();
-        formData.append('image', imageFile);
+      const res = await fetch('/api/parse-scoreboard', {
+        method: 'POST',
+        body: formData,
+      });
 
-        res = await fetch('/api/parse-scoreboard', {
-          method: 'POST',
-          body: formData,
-        });
-
-        // Silently retry on 503 Service Unavailable with exponential backoff (1s, 2s)
-        if (res.status === 503 && attempt < maxAttempts) {
-          const backoffMs = 1000 * Math.pow(2, attempt - 1);
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
-          continue;
-        }
-
-        data = await res.json();
-        break;
-      }
-
-      if (!res || !res.ok) {
-        throw new Error(
-          data.error || `Failed to parse scoreboard (HTTP ${res?.status}).`
-        );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Gemini HTTP ${res.status}`);
       }
 
       const rawList = (data.players as ExtractedScoreboardRow[]) ?? [];
-      const nextPrefill: Record<string, Partial<PlayerGridStat>> = {};
-      const unmapped: ExtractedScoreboardRow[] = [];
-      const detectedTeamCodes = new Set<string>();
-
-      for (const row of rawList) {
-        const matchedPlayer = findBestPlayerMatch(row.player_name);
-        if (matchedPlayer) {
-          nextPrefill[matchedPlayer.id] = {
-            player_id: matchedPlayer.id,
-            included: true,
-            kills: Number(row.elims) || 0,
-            deaths: Number(row.deaths) || 0,
-            damage: Number(row.damage) || 0,
-            healing: Number(row.healing) || 0,
-            map_won: Boolean(row.map_won),
-          };
-          if (matchedPlayer.teams?.code) {
-            detectedTeamCodes.add(matchedPlayer.teams.code);
-          }
-        } else {
-          unmapped.push(row);
-        }
+      if (rawList.length === 0) {
+        throw new Error('Gemini returned 0 player rows.');
       }
 
-      const codes = Array.from(detectedTeamCodes);
-      if (!matchName.trim() && codes.length >= 2) {
-        setMatchName(`${codes[0]} vs ${codes[1]}`);
+      applyExtractedRowsToGrid(rawList, 'Gemini AI');
+    } catch (geminiErr: unknown) {
+      console.warn(
+        'Gemini API failed, falling back to local browser Tesseract.js OCR:',
+        geminiErr
+      );
+
+      try {
+        setOcrStatusText('Gemini unavailable — starting local OCR...');
+        const fallbackRows = await runLocalTesseractScoreboardOcr(
+          imageFile,
+          players,
+          (progressMsg) => setOcrStatusText(progressMsg)
+        );
+
+        applyExtractedRowsToGrid(fallbackRows, 'Local Tesseract OCR Fallback');
+      } catch (localOcrErr: unknown) {
+        setBanner({
+          type: 'error',
+          text:
+            localOcrErr instanceof Error
+              ? `Both Gemini and Local OCR failed: ${localOcrErr.message}`
+              : 'Both Gemini and Local OCR extraction failed.',
+        });
       }
-
-      setExternalPrefill(nextPrefill);
-      setUnmappedOcrRows(unmapped);
-
-      const matchedCount = Object.keys(nextPrefill).length;
-      setBanner({
-        type: 'success',
-        text: `Gemini pre-filled ${matchedCount} players into Map ${mapNumber} below! ${
-          unmapped.length > 0
-            ? `(${unmapped.length} unrecognized name(s) can be linked right below.)`
-            : `Verify the numbers and click Commit Map ${mapNumber} Stats.`
-        }`,
-      });
-    } catch (err: unknown) {
-      setBanner({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'OCR extraction failed.',
-      });
     } finally {
       setParsingImage(false);
+      setOcrStatusText('');
     }
   };
 
@@ -482,11 +511,10 @@ export default function AdminDashboardPage() {
 
       {banner && (
         <div
-          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${
-            banner.type === 'success'
+          className={`rounded-xl border px-4 py-3 flex items-center gap-3 text-sm font-bold ${banner.type === 'success'
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
               : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-          }`}
+            }`}
         >
           {banner.type === 'success' ? (
             <CheckCircle2 className="w-5 h-5 shrink-0" />
@@ -528,11 +556,10 @@ export default function AdminDashboardPage() {
               const droppedFile = e.dataTransfer.files?.[0];
               if (droppedFile) handleFileSelect(droppedFile);
             }}
-            className={`lg:col-span-8 relative rounded-2xl border-2 border-dashed p-6 text-center transition-all ${
-              isDragging
+            className={`lg:col-span-8 relative rounded-2xl border-2 border-dashed p-6 text-center transition-all ${isDragging
                 ? 'border-orange-500 bg-orange-500/10'
                 : 'border-zinc-800 bg-zinc-900/40 hover:border-zinc-700'
-            }`}
+              }`}
           >
             <input
               type="file"
@@ -584,7 +611,7 @@ export default function AdminDashboardPage() {
             >
               <Sparkles className="w-4 h-4" />
               {parsingImage
-                ? `Extracting into Map ${mapNumber}...`
+                ? ocrStatusText || `Extracting into Map ${mapNumber}...`
                 : `Pre-Fill Map ${mapNumber} Grid`}
             </button>
             <p className="text-[11px] text-zinc-500 text-center">
@@ -1248,11 +1275,10 @@ function TeamManagerCard({
                     <button
                       type="button"
                       onClick={() => handleToggleEliminated(t)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-colors ${
-                        t.is_eliminated
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-colors ${t.is_eliminated
                           ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
                           : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                      }`}
+                        }`}
                     >
                       {t.is_eliminated ? 'Eliminated' : 'Active'}
                     </button>
@@ -1312,8 +1338,7 @@ function PriceChangeEngineCard({
     if (!targetGwId) return;
     const gwObj = gameweeks.find((g) => g.id === targetGwId);
     const confirmed = window.confirm(
-      `Run the Value Expectation Price Change algorithm for ${
-        gwObj?.name ?? 'this Gameweek'
+      `Run the Value Expectation Price Change algorithm for ${gwObj?.name ?? 'this Gameweek'
       }? This will permanently update player prices and adjust manager personal budgets.`
     );
     if (!confirmed) return;
@@ -1424,11 +1449,10 @@ function PriceChangeEngineCard({
                         {Number(r.out_expected_score).toFixed(1)}
                       </td>
                       <td
-                        className={`py-1.5 px-2 text-right font-mono font-bold ${
-                          Number(r.out_difference) >= 0
+                        className={`py-1.5 px-2 text-right font-mono font-bold ${Number(r.out_difference) >= 0
                             ? 'text-emerald-400'
                             : 'text-rose-400'
-                        }`}
+                          }`}
                       >
                         {Number(r.out_difference) >= 0 ? '+' : ''}
                         {Number(r.out_difference).toFixed(1)}
@@ -1757,9 +1781,8 @@ function ManualPriceOverrideCard({
         res.old_price
       ).toFixed(1)}M to $${Number(res.new_price).toFixed(
         1
-      )}M (${sign}$${Number(res.delta).toFixed(1)}M). Adjusted ${
-        res.affected_managers_count
-      } manager budget(s)!`;
+      )}M (${sign}$${Number(res.delta).toFixed(1)}M). Adjusted ${res.affected_managers_count
+        } manager budget(s)!`;
 
       setLastResultMessage(msg);
       onBanner({ type: 'success', text: msg });
@@ -1832,19 +1855,18 @@ function ManualPriceOverrideCard({
           <span className="text-zinc-400">
             Budget Impact per Owner:{' '}
             <strong
-              className={`font-mono ${
-                previewDelta > 0
+              className={`font-mono ${previewDelta > 0
                   ? 'text-emerald-400'
                   : previewDelta < 0
-                  ? 'text-rose-400'
-                  : 'text-zinc-300'
-              }`}
+                    ? 'text-rose-400'
+                    : 'text-zinc-300'
+                }`}
             >
               {previewDelta > 0
                 ? `+$${previewDelta.toFixed(1)}M`
                 : previewDelta < 0
-                ? `-$${Math.abs(previewDelta).toFixed(1)}M`
-                : '$0.0M (No Change)'}
+                  ? `-$${Math.abs(previewDelta).toFixed(1)}M`
+                  : '$0.0M (No Change)'}
             </strong>
           </span>
         </div>
