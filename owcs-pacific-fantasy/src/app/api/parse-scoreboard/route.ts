@@ -1,81 +1,64 @@
-import { NextResponse } from 'next/server';
-import { GoogleGenerativeAI, SchemaType, type Schema } from '@google/generative-ai';
-import { getCurrentUserProfile } from '@/lib/supabase/server';
+import { NextRequest, NextResponse } from 'next/server';
 
-const scoreboardResponseSchema: Schema = {
-  type: SchemaType.ARRAY,
-  description: 'List of player stat lines extracted from an Overwatch 2 post-match scoreboard.',
-  items: {
-    type: SchemaType.OBJECT,
-    properties: {
-      player_name: {
-        type: SchemaType.STRING,
-        description: 'Player BattleTag/name without team clan tags or brackets.',
-      },
-      role: {
-        type: SchemaType.STRING,
-        format: 'enum',
-        enum: ['TANK', 'DPS', 'SUPPORT'],
-        description: 'Overwatch role: TANK, DPS, or SUPPORT.',
-      },
-      elims: {
-        type: SchemaType.INTEGER,
-        description: 'Eliminations (E column).',
-      },
-      deaths: {
-        type: SchemaType.INTEGER,
-        description: 'Deaths (D column).',
-      },
-      damage: {
-        type: SchemaType.INTEGER,
-        description: 'Total hero damage dealt (integer without commas).',
-      },
-      healing: {
-        type: SchemaType.INTEGER,
-        description: 'Total healing done (integer without commas).',
-      },
-      map_won: {
-        type: SchemaType.BOOLEAN,
-        description: 'True if this player belongs to the team that won the map, otherwise false.',
-      },
-    },
-    required: [
-      'player_name',
-      'role',
-      'elims',
-      'deaths',
-      'damage',
-      'healing',
-      'map_won',
-    ],
-  },
-};
+const MAX_ATTEMPTS = 3;
+const BASE_DELAY_MS = 1000;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 
-export async function POST(request: Request) {
-  try {
-    // 1. Verify Admin Authorization via Supabase Session + Discord ID
-    const profile = await getCurrentUserProfile();
-    const isAuthorizedAdmin =
-      Boolean(profile?.is_admin) ||
-      (Boolean(profile?.discord_id) &&
-        profile?.discord_id === process.env.NEXT_PUBLIC_ADMIN_DISCORD_ID);
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    if (!isAuthorizedAdmin) {
-      return NextResponse.json(
-        { error: 'Unauthorized: Commissioner access required.' },
-        { status: 403 }
-      );
+/**
+ * Executes the fetch call to Google's Gemini REST API with a 3-attempt
+ * exponential backoff loop that silently retries on 503 Service Unavailable.
+ */
+async function fetchGeminiWithRetry(
+  url: string,
+  init: RequestInit,
+  maxAttempts: number = MAX_ATTEMPTS
+): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch(url, init);
+
+      // If not a 503 Service Unavailable, return immediately
+      if (response.status !== 503) {
+        return response;
+      }
+
+      // If 503 and we still have retries left, wait exponentially and retry silently
+      if (attempt < maxAttempts) {
+        const backoffMs = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+        await sleep(backoffMs);
+        continue;
+      }
+
+      return response;
+    } catch (err: unknown) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (attempt < maxAttempts) {
+        const backoffMs = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+        await sleep(backoffMs);
+        continue;
+      }
     }
+  }
 
-    if (!process.env.GEMINI_API_KEY) {
+  throw lastError ?? new Error('Gemini API request failed after 3 attempts.');
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
       return NextResponse.json(
         { error: 'Missing GEMINI_API_KEY in server environment variables.' },
         { status: 500 }
       );
     }
 
-    // 2. Parse Uploaded Screenshot File
-    const formData = await request.formData();
+    const formData = await req.formData();
     const file = formData.get('image') as File | null;
 
     if (!file) {
@@ -85,59 +68,101 @@ export async function POST(request: Request) {
       );
     }
 
+    if (!file.type.startsWith('image/')) {
+      return NextResponse.json(
+        { error: 'Invalid file type. Please upload an image.' },
+        { status: 400 }
+      );
+    }
+
+    if (file.size > MAX_IMAGE_BYTES) {
+      return NextResponse.json(
+        { error: 'Image exceeds the 5MB maximum file size limit.' },
+        { status: 400 }
+      );
+    }
+
     const arrayBuffer = await file.arrayBuffer();
     const base64Image = Buffer.from(arrayBuffer).toString('base64');
-    const mimeType = file.type || 'image/png';
 
-    // 3. Configure Gemini Flash with Structured JSON Schema Output
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-3.8-flash',
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: scoreboardResponseSchema,
-        temperature: 0.1,
-      },
+    const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+
+    const prompt = `Extract all 10 Overwatch 2 players and their stats from this scoreboard screenshot.
+Return ONLY a valid JSON object matching this exact structure:
+{
+  "players": [
+    {
+      "player_name": "string (exact BattleTag/name shown, without clan tag brackets)",
+      "elims": number (Eliminations / Kills column),
+      "deaths": number (Deaths column),
+      "damage": number (Hero Damage column, integer without commas),
+      "healing": number (Healing column, integer without commas),
+      "map_won": boolean (true if their team won the map, else false)
+    }
+  ]
+}`;
+
+    const geminiResponse = await fetchGeminiWithRetry(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  mimeType: file.type,
+                  data: base64Image,
+                },
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.1,
+        },
+      }),
     });
 
-    const prompt = `
-      You are an esports telemetry parser for the Overwatch Champions Series (OWCS).
-      Extract all player statistics from this Overwatch 2 scoreboard screenshot.
-
-      Important Overwatch 2 Scoreboard Rules:
-      1. There are typically 10 players total (5 on Team 1, 5 on Team 2).
-      2. Within each 5-player team block, rows are ordered by Role:
-         - 1st row of a team: TANK
-         - 2nd & 3rd rows of a team: DPS
-         - 4th & 5th rows of a team: SUPPORT
-      3. Stat columns in standard OW2 scoreboards are ordered:
-         - Eliminations (E)
-         - Assists (A) -> Ignore Assists
-         - Deaths (D)
-         - Damage Dealt (DMG) -> Strip commas/periods and return full integer
-         - Healing Done (H) -> Strip commas/periods and return full integer
-         - Mitigated (MIT) -> Ignore Mitigated
-      4. Strip team prefixes/clan tags from player_name (e.g., "DAF Clear" -> "Clear").
-      5. If the scoreboard shows which team won the map, set map_won = true for the 5 winning players and false for the 5 losing players. If unclear, default map_won to false.
-    `;
-
-    const result = await model.generateContent([
-      prompt,
-      {
-        inlineData: {
-          data: base64Image,
-          mimeType,
+    if (!geminiResponse.ok) {
+      const errText = await geminiResponse.text();
+      return NextResponse.json(
+        {
+          error: `Gemini API Error (${geminiResponse.status}): ${
+            geminiResponse.status === 503
+              ? 'Google Gemini is temporarily overloaded (503) after 3 retry attempts. Please try again in a few seconds.'
+              : errText
+          }`,
         },
-      },
-    ]);
+        { status: geminiResponse.status }
+      );
+    }
 
-    const responseText = result.response.text();
-    const parsedRows = JSON.parse(responseText);
+    const resultJson = await geminiResponse.json();
+    const rawText =
+      resultJson?.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
 
-    return NextResponse.json({ players: parsedRows });
+    const cleanedJson = rawText
+      .replace(/^```json\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
+    const parsed = JSON.parse(cleanedJson);
+
+    return NextResponse.json({
+      players: Array.isArray(parsed.players) ? parsed.players : [],
+    });
   } catch (err: unknown) {
-    const message =
-      err instanceof Error ? err.message : 'Failed to parse scoreboard image.';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Unexpected error while parsing scoreboard screenshot.',
+      },
+      { status: 500 }
+    );
   }
 }

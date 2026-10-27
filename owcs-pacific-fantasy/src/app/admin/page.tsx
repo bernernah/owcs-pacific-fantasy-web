@@ -200,17 +200,34 @@ export default function AdminDashboardPage() {
     setBanner(null);
 
     try {
-      const formData = new FormData();
-      formData.append('image', imageFile);
+      const maxAttempts = 3;
+      let res: Response | null = null;
+      let data: { players?: ExtractedScoreboardRow[]; error?: string } = {};
 
-      const res = await fetch('/api/parse-scoreboard', {
-        method: 'POST',
-        body: formData,
-      });
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const formData = new FormData();
+        formData.append('image', imageFile);
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to parse scoreboard.');
+        res = await fetch('/api/parse-scoreboard', {
+          method: 'POST',
+          body: formData,
+        });
+
+        // Silently retry on 503 Service Unavailable with exponential backoff (1s, 2s)
+        if (res.status === 503 && attempt < maxAttempts) {
+          const backoffMs = 1000 * Math.pow(2, attempt - 1);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          continue;
+        }
+
+        data = await res.json();
+        break;
+      }
+
+      if (!res || !res.ok) {
+        throw new Error(
+          data.error || `Failed to parse scoreboard (HTTP ${res?.status}).`
+        );
       }
 
       const rawList = (data.players as ExtractedScoreboardRow[]) ?? [];
