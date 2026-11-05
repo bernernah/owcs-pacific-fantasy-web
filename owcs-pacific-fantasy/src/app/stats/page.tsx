@@ -4,6 +4,7 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { BarChart3, Search, ArrowUpDown, Filter } from 'lucide-react';
 import { getSupabaseBrowserClient } from '@/lib/supabase/client';
 import RoleBadge from '@/components/RoleBadge';
+import PriceTrendBadge from '@/components/PriceTrendBadge';
 import type {
   PlayerSeasonStat,
   Gameweek,
@@ -14,6 +15,7 @@ import type {
 
 type SortField =
   | 'total_fantasy_points'
+  | 'avg_points_per_map'
   | 'price'
   | 'selected_by_pct'
   | 'total_elims'
@@ -42,9 +44,9 @@ export default function StatsDatabasePage() {
 
   const [seasonStats, setSeasonStats] = useState<PlayerSeasonStat[]>([]);
   const [matchLogs, setMatchLogs] = useState<MatchLogWithRelations[]>([]);
-  const [ownershipById, setOwnershipById] = useState<Record<string, number>>(
-    {}
-  );
+  const [ownershipById, setOwnershipById] = useState<
+    Record<string, { pct: number; delta: number }>
+  >({});
   const [gameweeks, setGameweeks] = useState<Gameweek[]>([]);
 
   const [selectedGwId, setSelectedGwId] = useState<string>('ALL');
@@ -76,19 +78,31 @@ export default function StatsDatabasePage() {
           .order('number', { ascending: true }),
       ]);
 
-      const ownMap: Record<string, number> = {};
+      const ownMap: Record<string, { pct: number; delta: number }> = {};
       if (ownershipData) {
         for (const row of ownershipData as PlayerOwnershipRow[]) {
-          ownMap[row.player_id] = Number(row.selected_by_pct ?? 0);
+          ownMap[row.player_id] = {
+            pct: Number(row.selected_by_pct ?? 0),
+            delta: Number(row.last_price_delta ?? 0),
+          };
         }
       }
       setOwnershipById(ownMap);
 
       const enrichedSeason = ((seasonData as PlayerSeasonStat[]) ?? []).map(
-        (row) => ({
-          ...row,
-          selected_by_pct: ownMap[row.player_id] ?? 0.0,
-        })
+        (row) => {
+          const mapsPlayed = Number(row.maps_played ?? 0);
+          const totalPts = Number(row.total_fantasy_points ?? 0);
+          const safePpm =
+            mapsPlayed > 0 ? Number((totalPts / mapsPlayed).toFixed(1)) : 0.0;
+
+          return {
+            ...row,
+            avg_points_per_map: safePpm,
+            selected_by_pct: ownMap[row.player_id]?.pct ?? 0.0,
+            last_price_delta: ownMap[row.player_id]?.delta ?? 0.0,
+          };
+        }
       );
 
       setSeasonStats(enrichedSeason);
@@ -129,7 +143,13 @@ export default function StatsDatabasePage() {
         .sort((a, b) => {
           const valA = Number(a[sortField] ?? 0);
           const valB = Number(b[sortField] ?? 0);
-          return sortAsc ? valA - valB : valB - valA;
+          if (valB !== valA) {
+            return sortAsc ? valA - valB : valB - valA;
+          }
+          return (
+            Number(b.total_fantasy_points ?? 0) -
+            Number(a.total_fantasy_points ?? 0)
+          );
         });
     }
 
@@ -162,8 +182,9 @@ export default function StatsDatabasePage() {
           total_healing: 0,
           maps_won: 0,
           total_fantasy_points: 0,
-          avg_points_per_map: 0,
-          selected_by_pct: ownershipById[p.id] ?? 0.0,
+          avg_points_per_map: 0.0,
+          selected_by_pct: ownershipById[p.id]?.pct ?? 0.0,
+          last_price_delta: ownershipById[p.id]?.delta ?? 0.0,
         };
       }
 
@@ -175,9 +196,10 @@ export default function StatsDatabasePage() {
       entry.total_healing += Number(ml.healing);
       entry.maps_won += ml.map_won ? 1 : 0;
       entry.total_fantasy_points += Number(ml.calculated_points);
-      entry.avg_points_per_map = Number(
-        (entry.total_fantasy_points / entry.maps_played).toFixed(2)
-      );
+      entry.avg_points_per_map =
+        entry.maps_played > 0
+          ? Number((entry.total_fantasy_points / entry.maps_played).toFixed(1))
+          : 0.0;
     }
 
     return Object.values(grouped)
@@ -195,7 +217,13 @@ export default function StatsDatabasePage() {
       .sort((a, b) => {
         const valA = Number(a[sortField] ?? 0);
         const valB = Number(b[sortField] ?? 0);
-        return sortAsc ? valA - valB : valB - valA;
+        if (valB !== valA) {
+          return sortAsc ? valA - valB : valB - valA;
+        }
+        return (
+          Number(b.total_fantasy_points ?? 0) -
+          Number(a.total_fantasy_points ?? 0)
+        );
       });
   }, [
     seasonStats,
@@ -232,8 +260,8 @@ export default function StatsDatabasePage() {
                 OWCS PACIFIC STATS DATABASE
               </h1>
               <p className="text-xs text-zinc-400">
-                Compare live manager ownership (Selected %) against cumulative
-                season totals or individual Matchdays.
+                Compare live manager ownership (Selected %), Points Per Map
+                (PPM), and cumulative fantasy totals.
               </p>
             </div>
           </div>
@@ -368,6 +396,16 @@ export default function StatsDatabasePage() {
                       Healing <ArrowUpDown className="w-3 h-3" />
                     </span>
                   </th>
+                  {/* NEW: Sortable Points Per Map (PPM) Column immediately left of Fantasy Pts */}
+                  <th
+                    onClick={() => toggleSort('avg_points_per_map')}
+                    title="Points Per Map (Total Fantasy Points / Maps Played)"
+                    className="py-3.5 px-4 text-right cursor-pointer hover:text-amber-400 text-amber-300/90 select-none"
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">
+                      Points Per Map <ArrowUpDown className="w-3 h-3" />
+                    </span>
+                  </th>
                   <th
                     onClick={() => toggleSort('total_fantasy_points')}
                     className="py-3.5 px-5 text-right cursor-pointer text-orange-400 select-none"
@@ -379,54 +417,72 @@ export default function StatsDatabasePage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/50 text-sm">
-                {displayedRows.map((row) => (
-                  <tr
-                    key={row.player_id}
-                    className="hover:bg-zinc-800/35 transition-colors"
-                  >
-                    <td className="py-3.5 px-5">
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
-                          {row.team_code}
+                {displayedRows.map((row) => {
+                  const mapsPlayed = Number(row.maps_played ?? 0);
+                  const totalPts = Number(row.total_fantasy_points ?? 0);
+                  const ppmValue =
+                    mapsPlayed > 0
+                      ? Number((totalPts / mapsPlayed).toFixed(1))
+                      : 0.0;
+
+                  return (
+                    <tr
+                      key={row.player_id}
+                      className="hover:bg-zinc-800/35 transition-colors"
+                    >
+                      <td className="py-3.5 px-5">
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                            {row.team_code}
+                          </span>
+                          <span className="font-bold text-white">
+                            {row.player_name}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <RoleBadge role={row.role} size="sm" />
+                      </td>
+                      <td className="py-3.5 px-4 font-semibold text-emerald-400 font-mono">
+                        <div className="flex items-center gap-1.5">
+                          <span>${Number(row.price).toFixed(1)}M</span>
+                          <PriceTrendBadge delta={row.last_price_delta} />
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 font-mono text-xs font-bold text-emerald-400">
+                          {Number(row.selected_by_pct ?? 0).toFixed(1)}%
                         </span>
-                        <span className="font-bold text-white">
-                          {row.player_name}
+                      </td>
+                      <td className="py-3.5 px-4 text-right text-zinc-300 font-mono">
+                        {mapsPlayed}
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-semibold text-zinc-200 font-mono">
+                        {row.total_elims}
+                      </td>
+                      <td className="py-3.5 px-4 text-right text-rose-400 font-mono">
+                        {row.total_deaths}
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-mono text-xs text-zinc-300">
+                        {Number(row.total_damage).toLocaleString()}
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-mono text-xs text-zinc-300">
+                        {Number(row.total_healing).toLocaleString()}
+                      </td>
+                      {/* NEW: Points Per Map Cell */}
+                      <td className="py-3.5 px-4 text-right">
+                        <span className="font-mono font-bold text-sm text-amber-300">
+                          {ppmValue.toFixed(1)}
                         </span>
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-4">
-                      <RoleBadge role={row.role} size="sm" />
-                    </td>
-                    <td className="py-3.5 px-4 font-semibold text-emerald-400 font-mono">
-                      ${Number(row.price).toFixed(1)}M
-                    </td>
-                    <td className="py-3.5 px-4 text-right">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 font-mono text-xs font-bold text-emerald-400">
-                        {Number(row.selected_by_pct ?? 0).toFixed(1)}%
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 text-right text-zinc-300">
-                      {row.maps_played}
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-semibold text-zinc-200">
-                      {row.total_elims}
-                    </td>
-                    <td className="py-3.5 px-4 text-right text-rose-400">
-                      {row.total_deaths}
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-mono text-xs text-zinc-300">
-                      {Number(row.total_damage).toLocaleString()}
-                    </td>
-                    <td className="py-3.5 px-4 text-right font-mono text-xs text-zinc-300">
-                      {Number(row.total_healing).toLocaleString()}
-                    </td>
-                    <td className="py-3.5 px-5 text-right">
-                      <span className="font-black text-base text-orange-400 font-mono">
-                        {Number(row.total_fantasy_points).toFixed(1)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="py-3.5 px-5 text-right">
+                        <span className="font-black text-base text-orange-400 font-mono">
+                          {totalPts.toFixed(1)}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
